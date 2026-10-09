@@ -1,0 +1,824 @@
+// Library — front end. No framework: a masonry grid, a viewer, and live updates
+// from the server as things get sorted.
+
+const main = document.getElementById('main');
+const searchInput = document.getElementById('search');
+const viewerEl = document.getElementById('viewer');
+const toastsEl = document.getElementById('toasts');
+
+const state = {
+  items: new Map(),
+  categories: [],
+  ai: { enabled: true },
+  query: '',
+  previews: new Map(), // local object URLs shown while an upload is being sorted
+  viewer: null, // { id, ids }
+};
+
+// ---------- tiny DOM helper (text is always set as text, never HTML) ----------
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'style' && typeof v === 'object') Object.assign(node.style, v);
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else if (k in node && k !== 'list') node[k] = v;
+    else node.setAttribute(k, v);
+  }
+  for (const c of children.flat(Infinity)) if (c != null && c !== false) node.append(c instanceof Node ? c : String(c));
+  return node;
+}
+
+async function api(path, { method = 'GET', body } = {}) {
+  const opts = { method };
+  if (body instanceof FormData) opts.body = body;
+  else if (body !== undefined) {
+    opts.body = JSON.stringify(body);
+    opts.headers = { 'content-type': 'application/json' };
+  }
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function formatBytes(n) {
+  if (!n && n !== 0) return '';
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) (n /= 1024), i++;
+  return `${n.toFixed(n < 10 && i ? 1 : 0)} ${u[i]}`;
+}
+
+const KIND_LABEL = { image: 'Image', font: 'Font', pdf: 'PDF', video: 'Video', link: 'Link', note: 'Note', file: 'File' };
+
+// ---------- routing ----------
+
+function route() {
+  const hash = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  if (hash === 'folders') return { view: 'folders' };
+  if (hash.startsWith('f/')) return { view: 'folder', name: hash.slice(2) };
+  return { view: 'all' };
+}
+
+const folderHref = (name) => `#/f/${encodeURIComponent(name)}`;
+
+// ---------- data ----------
+
+function counts() {
+  const map = new Map();
+  for (const item of state.items.values()) if (item.category) map.set(item.category, (map.get(item.category) || 0) + 1);
+  return map;
+}
+
+function sortedItems() {
+  return [...state.items.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function matches(item, terms) {
+  if (!terms.length) return true;
+  const hay = [item.title, item.description, item.category, item.originalName, item.site, item.url, item.fontFamily, item.kind, ...(item.tags || []), item.text?.slice(0, 2000)]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return terms.every((t) => hay.includes(t));
+}
+
+function visibleItems(r = route()) {
+  const terms = state.query.toLowerCase().split(/\s+/).filter(Boolean);
+  return sortedItems().filter((i) => (r.view !== 'folder' || i.category === r.name) && matches(i, terms));
+}
+
+// ---------- tiles ----------
+
+const tileCache = new Map();
+const loadedFonts = new Set();
+
+function ensureFont(item) {
+  const family = `lib-${item.id}`;
+  if (!loadedFonts.has(item.id) && item.src) {
+    loadedFonts.add(item.id);
+    new FontFace(family, `url("${item.src}")`)
+      .load()
+      .then((f) => document.fonts.add(f))
+      .catch(() => {});
+  }
+  return `"${family}", var(--font)`;
+}
+
+function ratioOf(item) {
+  if (item.width && item.height) return Math.min(2.4, Math.max(0.45, item.height / item.width));
+  return { font: 1, note: 1.15, pdf: 1.3, video: 0.5625, link: 0.75, file: 1 }[item.kind] || 1;
+}
+
+function imageFor(item) {
+  if (item.kind === 'image' && item.ext === '.gif' && item.status === 'ready') return item.src;
+  return item.thumbSrc || state.previews.get(item.id) || null;
+}
+
+function tileMedia(item) {
+  const img = imageFor(item);
+  const bg = item.colors?.[0];
+  if (img) {
+    return el('img', { src: img, alt: item.title || '', loading: 'lazy', decoding: 'async', style: { objectPosition: ratioOf(item) >= 2.4 ? 'top' : 'center', background: bg || '' } });
+  }
+  if (item.kind === 'video' && item.src) {
+    const v = el('video', { src: item.src, muted: true, loop: true, playsInline: true, preload: 'metadata' });
+    v.addEventListener('loadedmetadata', () => {
+      if (v.videoWidth) v.parentElement.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
+    });
+    return v;
+  }
+  if (item.kind === 'font') {
+    return el(
+      'div',
+      { class: 'card font', style: { fontFamily: ensureFont(item) } },
+      el('div', { class: 'kind' }, 'Font'),
+      el('div', { class: 'aa' }, 'Aa'),
+      el('div', { class: 'glyphs' }, 'ABCDEFGHIJKLM abcdefghijklm 0123456789'),
+    );
+  }
+  if (item.kind === 'note') {
+    return el('div', { class: 'card note' }, el('div', { class: 'body' }, item.text || item.title), el('div', { class: 'kind' }, 'Note'));
+  }
+  if (item.kind === 'link') {
+    return el('div', { class: 'card' }, el('div', { class: 'kind' }, 'Link'), el('div', { class: 'name' }, item.title), el('div', { class: 'host' }, item.site || ''));
+  }
+  return el(
+    'div',
+    { class: 'card file' },
+    el('div', { class: 'kind' }, KIND_LABEL[item.kind] || 'File'),
+    el('div', { class: 'ext' }, (item.ext || '').slice(1).toUpperCase() || '?'),
+    el('div', { class: 'name' }, item.title || item.originalName || ''),
+  );
+}
+
+function buildTile(item) {
+  const media = el('div', { class: 'media', style: { aspectRatio: `1 / ${ratioOf(item)}` } }, tileMedia(item));
+
+  const tile = el(
+    'div',
+    {
+      class: `tile ${item.status}`,
+      tabIndex: 0,
+      role: 'button',
+      'aria-label': item.title || 'Item',
+      'data-id': item.id,
+      onclick: () => openViewer(item.id),
+      onkeydown: (e) => e.key === 'Enter' && openViewer(item.id),
+    },
+    media,
+  );
+
+  if (item.kind === 'link' && imageFor(item)) {
+    tile.append(el('div', { class: 'link-caption' }, el('b', {}, item.title), el('small', {}, item.site || '')));
+  }
+  if (item.kind === 'video') {
+    tile.addEventListener('mouseenter', () => tile.querySelector('video')?.play().catch(() => {}));
+    tile.addEventListener('mouseleave', () => tile.querySelector('video')?.pause());
+  }
+
+  if (item.status === 'processing') tile.append(el('span', { class: 'badge' }, 'Sorting…'));
+  else if (item.status === 'error') tile.append(el('span', { class: 'badge' }, 'Couldn’t sort'));
+  else tile.append(el('div', { class: 'meta' }, el('b', {}, item.title || 'Untitled'), el('small', {}, item.category || '')));
+  return tile;
+}
+
+function tileFor(item) {
+  const sig = [item.status, item.thumbSrc, item.src, item.title, item.category, state.previews.has(item.id)].join('|');
+  const cached = tileCache.get(item.id);
+  if (cached && cached.sig === sig) return cached.node;
+  const node = buildTile(item);
+  tileCache.set(item.id, { sig, node });
+  return node;
+}
+
+// ---------- masonry grid with incremental loading ----------
+
+const PAGE = 90;
+let grid = null;
+let gridObserver = null;
+
+function columnCount(width) {
+  if (width < 520) return 2;
+  return Math.max(2, Math.min(7, Math.floor((width + 14) / 270)));
+}
+
+function renderGrid(items, keepShown) {
+  const container = el('div', { class: 'grid' });
+  const width = main.clientWidth - parseFloat(getComputedStyle(main).paddingLeft) * 2;
+  const n = columnCount(width);
+  const cols = Array.from({ length: n }, () => el('div', { class: 'col' }));
+  container.append(...cols);
+  grid = { items, cols, heights: new Array(n).fill(0), shown: 0 };
+  addToGrid(Math.max(PAGE, keepShown || 0));
+
+  const sentinel = el('div', { class: 'sentinel' });
+  gridObserver?.disconnect();
+  gridObserver = new IntersectionObserver((entries) => entries[0].isIntersecting && addToGrid(PAGE), { rootMargin: '1200px' });
+  requestAnimationFrame(() => gridObserver.observe(sentinel));
+  return el('div', {}, container, sentinel);
+}
+
+function addToGrid(count) {
+  if (!grid) return;
+  const end = Math.min(grid.items.length, grid.shown + count);
+  for (let i = grid.shown; i < end; i++) {
+    const item = grid.items[i];
+    const c = grid.heights.indexOf(Math.min(...grid.heights));
+    grid.cols[c].append(tileFor(item));
+    grid.heights[c] += ratioOf(item) + (item.kind === 'link' && imageFor(item) ? 0.2 : 0) + 0.06;
+  }
+  grid.shown = end;
+}
+
+// ---------- views ----------
+
+function chipsRow(active) {
+  const c = counts();
+  const total = state.items.size;
+  const cats = [...state.categories].sort((a, b) => (a.name === 'Unsorted') - (b.name === 'Unsorted') || a.name.localeCompare(b.name));
+  return el(
+    'div',
+    { class: 'chips' },
+    el('a', { class: `chip ${active ? '' : 'on'}`, href: '#/' }, 'Everything', el('span', {}, total)),
+    cats.map((cat) => el('a', { class: `chip ${active === cat.name ? 'on' : ''}`, href: folderHref(cat.name) }, cat.name, el('span', {}, c.get(cat.name) || 0))),
+  );
+}
+
+function emptyLibrary() {
+  return el(
+    'div',
+    { class: 'empty' },
+    el('h1', {}, 'Drop anything here.'),
+    el('p', {}, 'Posters, patterns, 3D renders, fonts, PDFs, links. Paste, drop or add them and each one is sorted into the right folder for you. New folders appear as your collection grows.'),
+    el(
+      'div',
+      { class: 'hint' },
+      el('button', { class: 'pill', onclick: () => document.getElementById('picker').click() }, 'Choose files'),
+      el('span', { class: 'pill' }, 'or paste ', el('kbd', {}, navigator.platform.includes('Mac') ? '⌘V' : 'Ctrl V')),
+    ),
+  );
+}
+
+function folderHeading(cat, n) {
+  const tools = el(
+    'div',
+    { class: 'tools' },
+    el('button', { class: 'pill', onclick: () => renameFolder(cat) }, 'Rename'),
+    el('button', { class: 'pill', onclick: () => describeFolder(cat) }, cat.description ? 'Edit description' : 'Add description'),
+    n === 0 && el('button', { class: 'pill danger', onclick: () => deleteFolder(cat) }, 'Delete folder'),
+  );
+  return el('div', { class: 'heading' }, el('h1', {}, cat.name), el('p', {}, [cat.description, plural(n, 'item')].filter(Boolean).join(' · ')), tools);
+}
+
+function foldersView() {
+  const c = counts();
+  const latestBy = new Map();
+  const previews = new Map();
+  for (const item of sortedItems()) {
+    if (!item.category) continue;
+    if (!latestBy.has(item.category)) latestBy.set(item.category, item.createdAt);
+    const list = previews.get(item.category) || [];
+    if (list.length < 4 && imageFor(item)) list.push(imageFor(item));
+    previews.set(item.category, list);
+  }
+  const terms = state.query.toLowerCase().split(/\s+/).filter(Boolean);
+  const cats = state.categories
+    .filter((cat) => terms.every((t) => `${cat.name} ${cat.description}`.toLowerCase().includes(t)))
+    .sort((a, b) => (latestBy.get(b.name) || b.createdAt).localeCompare(latestBy.get(a.name) || a.createdAt));
+
+  if (!cats.length) return el('div', { class: 'quiet' }, state.categories.length ? 'No folders match.' : 'Folders appear here as things get sorted.');
+
+  return el(
+    'div',
+    {},
+    el('div', { class: 'heading' }, el('h1', {}, 'Folders'), el('p', {}, `${plural(state.categories.length, 'folder')}, made and filled automatically`)),
+    el(
+      'div',
+      { class: 'folders' },
+      cats.map((cat) => {
+        const imgs = previews.get(cat.name) || [];
+        const cls = ['', 'one', 'two', 'three', ''][imgs.length];
+        const collage = el(
+          'div',
+          { class: `collage ${cls}` },
+          imgs.length
+            ? imgs.map((src) => el('div', { style: { backgroundImage: `url("${src}")` } }))
+            : el('div', { class: 'glyph', style: { gridColumn: '1 / -1', gridRow: '1 / -1' } }, cat.name === 'Fonts' ? 'Aa' : cat.name[0]),
+        );
+        return el('a', { class: 'folder', href: folderHref(cat.name) }, collage, el('h3', {}, cat.name), el('p', {}, plural(c.get(cat.name) || 0, 'item')));
+      }),
+    ),
+  );
+}
+
+let lastRouteKey = '';
+
+function render() {
+  const r = route();
+  document.querySelector('[data-nav="folders"]').classList.toggle('on', r.view === 'folders');
+  const routeKey = `${r.view}|${r.name || ''}|${state.query}`;
+  const keepShown = routeKey === lastRouteKey ? grid?.shown : 0;
+  if (routeKey !== lastRouteKey) window.scrollTo(0, 0);
+  lastRouteKey = routeKey;
+
+  const frag = [];
+  if (r.view === 'folders') {
+    grid = null;
+    frag.push(foldersView());
+  } else if (!state.items.size) {
+    grid = null;
+    frag.push(emptyLibrary());
+  } else {
+    frag.push(chipsRow(r.view === 'folder' ? r.name : null));
+    const items = visibleItems(r);
+    if (r.view === 'folder') {
+      const cat = state.categories.find((c) => c.name === r.name);
+      if (!cat) {
+        location.hash = '#/';
+        return;
+      }
+      frag.push(folderHeading(cat, counts().get(cat.name) || 0));
+    }
+    if (state.query) frag.push(el('div', { class: 'quiet', style: { padding: '0 0 18px', textAlign: 'left' } }, `${plural(items.length, 'result')} for “${state.query}”`));
+    if (items.length) frag.push(renderGrid(items, keepShown));
+    else if (!state.query) frag.push(el('div', { class: 'quiet' }, 'Nothing in here yet.'));
+    else grid = null;
+  }
+  main.replaceChildren(...frag);
+}
+
+let renderTimer = null;
+function scheduleRender() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(render, 60);
+}
+
+let lastWidth = window.innerWidth;
+window.addEventListener('resize', () => {
+  if (Math.abs(window.innerWidth - lastWidth) > 40) {
+    lastWidth = window.innerWidth;
+    scheduleRender();
+  }
+});
+
+// ---------- folder actions ----------
+
+async function renameFolder(cat) {
+  const name = prompt('Rename folder (use the name of another folder to merge into it)', cat.name);
+  if (!name || name.trim() === cat.name) return;
+  try {
+    const { category } = await api(`/api/categories/${encodeURIComponent(cat.name)}`, { method: 'PATCH', body: { name } });
+    await refresh();
+    location.hash = folderHref(category.name);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function describeFolder(cat) {
+  const description = prompt('What belongs in this folder? (Claude uses this when sorting)', cat.description || '');
+  if (description == null) return;
+  try {
+    await api(`/api/categories/${encodeURIComponent(cat.name)}`, { method: 'PATCH', body: { description } });
+    await refresh();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function deleteFolder(cat) {
+  try {
+    await api(`/api/categories/${encodeURIComponent(cat.name)}`, { method: 'DELETE' });
+    location.hash = '#/folders';
+    await refresh();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// ---------- viewer ----------
+
+function openViewer(id) {
+  const ids = (grid?.items || visibleItems()).map((i) => i.id);
+  state.viewer = { id, ids };
+  viewerEl.hidden = false;
+  document.body.style.overflow = 'hidden';
+  renderViewer();
+}
+
+function closeViewer() {
+  state.viewer = null;
+  viewerEl.hidden = true;
+  document.body.style.overflow = '';
+  viewerEl.querySelector('.viewer-stage').replaceChildren();
+}
+
+function stepViewer(dir) {
+  if (!state.viewer) return;
+  const { ids, id } = state.viewer;
+  const i = ids.indexOf(id);
+  const next = ids[(i + dir + ids.length) % ids.length];
+  if (next && next !== id) {
+    state.viewer.id = next;
+    renderViewer();
+  }
+}
+
+function stageFor(item) {
+  if (item.kind === 'image') return el('img', { src: item.status === 'ready' ? item.src : imageFor(item) || item.src, alt: item.title || '', onerror: (e) => item.thumbSrc && (e.target.src = item.thumbSrc) });
+  if (item.kind === 'video') return el('video', { src: item.src, controls: true, autoplay: true, loop: true, playsInline: true });
+  if (item.kind === 'pdf') return el('iframe', { src: item.src, title: item.title });
+  if (item.kind === 'link' && item.thumbSrc) return el('a', { href: item.url, target: '_blank', rel: 'noopener' }, el('img', { src: item.thumbSrc, alt: item.title || '' }));
+  if (item.kind === 'font') {
+    const family = ensureFont(item);
+    return el(
+      'div',
+      { class: 'specimen', style: { fontFamily: family } },
+      el('p', { class: 'big' }, 'Aa Gg Rr'),
+      el('p', { class: 'row' }, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'),
+      el('p', { class: 'row' }, 'abcdefghijklmnopqrstuvwxyz'),
+      el('p', { class: 'row' }, '0123456789 !?&@#%(){}'),
+      el('textarea', { rows: 2, style: { fontFamily: family }, value: 'The quick brown fox jumps over the lazy dog', 'aria-label': 'Type to preview' }),
+    );
+  }
+  if (item.kind === 'note') {
+    const box = el('div', { class: 'note-view' }, item.text || '');
+    if (item.src) fetch(item.src).then((r) => r.text()).then((t) => (box.textContent = t)).catch(() => {});
+    return box;
+  }
+  if (item.kind === 'link') return el('div', { class: 'file-view' }, el('div', { class: 'ext' }, item.site || 'Link'), el('p', {}, item.title));
+  return el('div', { class: 'file-view' }, el('div', { class: 'ext' }, (item.ext || '').slice(1).toUpperCase() || 'FILE'), el('p', {}, item.originalName || item.title));
+}
+
+function whyText(item) {
+  if (item.status === 'processing') return 'Sorting…';
+  if (item.status === 'error' || item.error) return item.error || 'Something went wrong.';
+  return { ai: 'Sorted by Claude', rule: `${KIND_LABEL[item.kind] || 'Files'}s always go here`, you: 'Moved here by you' }[item.sortedBy] || '';
+}
+
+function renderViewer() {
+  const item = state.items.get(state.viewer?.id);
+  if (!item) return closeViewer();
+  const stage = viewerEl.querySelector('.viewer-stage');
+  if (stage.dataset.id !== item.id || stage.dataset.status !== item.status) {
+    stage.replaceChildren(stageFor(item));
+    stage.dataset.id = item.id;
+    stage.dataset.status = item.status;
+  }
+  viewerEl.querySelectorAll('.viewer-nav').forEach((b) => (b.hidden = state.viewer.ids.length < 2));
+
+  const cats = [...state.categories].sort((a, b) => a.name.localeCompare(b.name));
+  const select = el(
+    'select',
+    {
+      'aria-label': 'Folder',
+      disabled: item.status === 'processing',
+      onchange: async (e) => {
+        let category = e.target.value;
+        if (category === '__new') {
+          category = prompt('New folder name');
+          if (!category) return renderViewer();
+        }
+        try {
+          await api(`/api/items/${item.id}`, { method: 'PATCH', body: { category } });
+          toast(`Moved to ${category}`);
+        } catch (err) {
+          toast(err.message);
+        }
+      },
+    },
+    !item.category && el('option', { value: '', selected: true }, 'Sorting…'),
+    cats.map((c) => el('option', { value: c.name, selected: c.name === item.category }, c.name)),
+    el('option', { value: '__new' }, '+ New folder…'),
+  );
+
+  const title = el('textarea', {
+    class: 'title',
+    rows: 1,
+    value: item.title || '',
+    'aria-label': 'Title',
+    onkeydown: (e) => e.key === 'Enter' && (e.preventDefault(), e.target.blur()),
+    onblur: (e) => {
+      const v = e.target.value.trim();
+      if (v && v !== item.title) api(`/api/items/${item.id}`, { method: 'PATCH', body: { title: v } }).catch((err) => toast(err.message));
+    },
+  });
+
+  const facts = [
+    ['Type', KIND_LABEL[item.kind] || 'File'],
+    item.fontFamily && ['Family', [item.fontFamily, item.fontStyle].filter(Boolean).join(' · ')],
+    item.width && ['Size', `${item.width} × ${item.height}`],
+    item.size && ['File size', formatBytes(item.size)],
+    item.url && ['Source', el('a', { href: item.url, target: '_blank', rel: 'noopener', style: { textDecoration: 'underline' } }, item.site || item.url)],
+    ['Added', new Date(item.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })],
+    item.file && ['On disk', item.file],
+  ].filter(Boolean);
+
+  const why = whyText(item);
+  const panel = viewerEl.querySelector('.viewer-panel');
+  panel.replaceChildren();
+  panel.append(
+    el(
+      'div',
+      { style: { display: 'contents' } },
+    el('div', { class: 'field' }, el('label', {}, 'Folder'), select, why && el('div', { class: `why ${item.error || item.status === 'error' ? 'err' : ''}` }, why)),
+    el('div', {}, title, item.description && el('p', { class: 'desc' }, item.description)),
+    item.tags?.length > 0 &&
+      el(
+        'div',
+        { class: 'field' },
+        el('label', {}, 'Tags'),
+        el('div', { class: 'tags' }, item.tags.map((t) => el('button', { class: 'tag', onclick: () => searchFor(t) }, t))),
+      ),
+    item.colors?.length > 0 &&
+      el(
+        'div',
+        { class: 'field' },
+        el('label', {}, 'Colors'),
+        el(
+          'div',
+          { class: 'swatches' },
+          item.colors.map((c) =>
+            el('button', {
+              class: 'swatch',
+              title: c,
+              style: { background: c },
+              onclick: () => navigator.clipboard?.writeText(c).then(() => toast(`Copied ${c}`)),
+            }),
+          ),
+        ),
+      ),
+    el('dl', { class: 'facts' }, facts.map(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])),
+    el(
+      'div',
+      { class: 'buttons' },
+      item.url
+        ? el('a', { class: 'pill', href: item.url, target: '_blank', rel: 'noopener' }, 'Visit page')
+        : item.src && el('a', { class: 'pill', href: item.src, target: '_blank', rel: 'noopener' }, 'Open original'),
+      item.src && item.kind !== 'link' && el('a', { class: 'pill', href: item.src, download: item.originalName || '' }, 'Download'),
+      el(
+        'button',
+        {
+          class: 'pill',
+          disabled: item.status === 'processing',
+          onclick: () => api(`/api/items/${item.id}/resort`, { method: 'POST' }).catch((e) => toast(e.message)),
+        },
+        'Re-sort',
+      ),
+      el(
+        'button',
+        {
+          class: 'pill danger',
+          onclick: async () => {
+            if (!confirm('Delete this from your library? The file is removed from disk too.')) return;
+            const { ids } = state.viewer;
+            const i = ids.indexOf(item.id);
+            await api(`/api/items/${item.id}`, { method: 'DELETE' }).catch((e) => toast(e.message));
+            state.viewer.ids = ids.filter((x) => x !== item.id);
+            if (state.viewer.ids.length) {
+              state.viewer.id = state.viewer.ids[Math.min(i, state.viewer.ids.length - 1)];
+              renderViewer();
+            } else closeViewer();
+          },
+        },
+        'Delete',
+      ),
+    ),
+    ),
+  );
+}
+
+viewerEl.addEventListener('click', (e) => {
+  const act = e.target.closest('[data-act]');
+  if (!act || (act.classList.contains('viewer-stage') && e.target !== act)) return;
+  if (act.dataset.act === 'close') closeViewer();
+  if (act.dataset.act === 'prev') stepViewer(-1);
+  if (act.dataset.act === 'next') stepViewer(1);
+});
+
+function searchFor(text) {
+  closeViewer();
+  searchInput.value = text;
+  state.query = text;
+  if (route().view === 'folders') location.hash = '#/';
+  render();
+}
+
+// ---------- toasts ----------
+
+function toast(content, { thumb, badge, action, duration = 3200 } = {}) {
+  const node = el('div', { class: 'toast' }, thumb && el('img', { src: thumb, alt: '' }), el('span', {}, content), badge && el('span', { class: 'new' }, badge), action && el('button', { onclick: action.run }, action.label));
+  toastsEl.append(node);
+  while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
+  const remove = () => {
+    node.classList.add('leave');
+    setTimeout(() => node.remove(), 260);
+  };
+  if (duration) setTimeout(remove, duration);
+  return { remove, set: (text) => (node.querySelector('span').textContent = text) };
+}
+
+// ---------- adding things ----------
+
+const isImageFile = (f) => f.type.startsWith('image/') && !f.type.includes('heic');
+
+async function uploadFiles(fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const t = toast(`Adding ${plural(files.length, 'thing')}…`, { duration: 0 });
+  let dupes = 0;
+  try {
+    for (let i = 0; i < files.length; i += 12) {
+      const chunk = files.slice(i, i + 12);
+      const fd = new FormData();
+      chunk.forEach((f, j) => fd.append('files', f, f.name || `pasted-${Date.now()}-${j}.png`));
+      const { results } = await api('/api/upload', { method: 'POST', body: fd });
+      results.forEach(({ item, duplicate }, j) => {
+        if (duplicate) return dupes++;
+        if (isImageFile(chunk[j]) && !(state.items.get(item.id) || item).thumbSrc) state.previews.set(item.id, URL.createObjectURL(chunk[j]));
+        // Live updates may already have delivered a newer (even sorted) version of this item.
+        if (!state.items.has(item.id)) state.items.set(item.id, item);
+      });
+      if (route().view === 'folders') location.hash = '#/';
+      scheduleRender();
+    }
+    if (dupes) toast(dupes === files.length ? 'Already in your library' : `${plural(dupes, 'duplicate')} skipped`);
+  } catch (e) {
+    toast(`Upload failed: ${e.message}`);
+  } finally {
+    t.remove();
+  }
+}
+
+async function addText(text) {
+  const value = text.trim();
+  if (!value) return;
+  const isUrl = /^https?:\/\/\S+$/i.test(value);
+  const t = toast(isUrl ? 'Saving link…' : 'Saving note…', { duration: 0 });
+  try {
+    const { results } = await api('/api/paste', { method: 'POST', body: { text: value } });
+    const { item, duplicate } = results[0];
+    if (duplicate) toast('Already in your library');
+    else if (!state.items.has(item.id)) state.items.set(item.id, item);
+    if (route().view === 'folders') location.hash = '#/';
+    scheduleRender();
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    t.remove();
+  }
+}
+
+const typingInField = (e) => e.target.closest?.('input, textarea, select, [contenteditable]');
+
+document.addEventListener('paste', (e) => {
+  if (typingInField(e)) return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) {
+    e.preventDefault();
+    return uploadFiles(files);
+  }
+  const text = e.clipboardData?.getData('text/plain');
+  if (text) {
+    e.preventDefault();
+    addText(text);
+  }
+});
+
+const dropEl = document.getElementById('drop');
+let dragDepth = 0;
+const isExternalDrag = (e) => [...(e.dataTransfer?.types || [])].some((t) => t === 'Files' || t === 'text/uri-list' || t === 'text/html');
+document.addEventListener('dragenter', (e) => {
+  if (!isExternalDrag(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  dropEl.hidden = false;
+});
+document.addEventListener('dragover', (e) => isExternalDrag(e) && e.preventDefault());
+document.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) dropEl.hidden = true;
+});
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropEl.hidden = true;
+  const dt = e.dataTransfer;
+  if (dt.files?.length) return uploadFiles(dt.files);
+  // Dragged from another browser tab: prefer the actual image over the page link.
+  const html = dt.getData('text/html');
+  const imgSrc = html && new DOMParser().parseFromString(html, 'text/html').querySelector('img')?.src;
+  const url = (imgSrc && /^https?:/.test(imgSrc) && imgSrc) || dt.getData('text/uri-list').split('\n').find((l) => l && !l.startsWith('#')) || dt.getData('text/plain');
+  if (url) addText(url);
+});
+
+const picker = document.getElementById('picker');
+document.getElementById('add').addEventListener('click', () => picker.click());
+picker.addEventListener('change', () => {
+  uploadFiles(picker.files);
+  picker.value = '';
+});
+
+// ---------- keyboard & search ----------
+
+let searchTimer = null;
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.query = searchInput.value.trim();
+    render();
+  }, 120);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (state.viewer && !typingInField(e)) {
+    if (e.key === 'Escape') closeViewer();
+    if (e.key === 'ArrowLeft') stepViewer(-1);
+    if (e.key === 'ArrowRight') stepViewer(1);
+    return;
+  }
+  if (e.key === 'Escape' && document.activeElement === searchInput) {
+    searchInput.value = '';
+    state.query = '';
+    searchInput.blur();
+    render();
+  }
+  if (e.key === '/' && !typingInField(e)) {
+    e.preventDefault();
+    searchInput.focus();
+  }
+});
+
+window.addEventListener('hashchange', () => {
+  closeViewer();
+  render();
+});
+
+// ---------- live updates ----------
+
+function connectEvents() {
+  const es = new EventSource('/api/events');
+  es.addEventListener('item', (e) => {
+    const item = JSON.parse(e.data);
+    state.items.set(item.id, item);
+    if (item.thumbSrc && state.previews.has(item.id)) {
+      // Keep the local preview until the real thumbnail has loaded, to avoid a flash.
+      const img = new Image();
+      img.onload = img.onerror = () => {
+        URL.revokeObjectURL(state.previews.get(item.id));
+        state.previews.delete(item.id);
+        scheduleRender();
+      };
+      img.src = item.thumbSrc;
+    }
+    scheduleRender();
+    if (state.viewer?.id === item.id) renderViewer();
+  });
+  es.addEventListener('sorted', (e) => {
+    const { id, category, created, previous } = JSON.parse(e.data);
+    const item = state.items.get(id);
+    const thumb = item && imageFor(item);
+    const verb = previous && previous === category ? 'Still belongs in' : 'Sorted into';
+    toast(`${verb} ${category}`, {
+      thumb,
+      badge: created ? 'New folder' : null,
+      action: { label: 'View', run: () => (location.hash = folderHref(category)) },
+    });
+  });
+  es.addEventListener('deleted', (e) => {
+    const { id } = JSON.parse(e.data);
+    state.items.delete(id);
+    tileCache.delete(id);
+    scheduleRender();
+  });
+  es.addEventListener('categories', (e) => {
+    state.categories = JSON.parse(e.data);
+    scheduleRender();
+    if (state.viewer) renderViewer();
+  });
+  // Re-sync after the connection drops (e.g. the server restarted).
+  let dropped = false;
+  es.addEventListener('error', () => (dropped = true));
+  es.addEventListener('open', () => dropped && refresh());
+}
+
+async function refresh() {
+  const data = await api('/api/library');
+  state.ai = data.ai;
+  state.categories = data.categories;
+  state.items = new Map(data.items.map((i) => [i.id, i]));
+  const notice = document.getElementById('notice');
+  notice.hidden = state.ai.enabled;
+  if (!state.ai.enabled) {
+    notice.replaceChildren('Auto-sorting is off. Add your ', el('code', {}, 'ANTHROPIC_API_KEY'), ' to ', el('code', {}, '.env'), ' and restart — until then new things land in Unsorted.');
+  }
+  render();
+}
+
+refresh().then(connectEvents);

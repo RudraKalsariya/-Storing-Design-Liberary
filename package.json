@@ -1,0 +1,30 @@
+{
+  "name": "design-library",
+  "version": "1.0.0",
+  "description": "A personal design library that sorts itself.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RudraKalsariya/-Storing-Design-Liberary.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RudraKalsariya/-Storing-Design-Liberary/issues"
+  },
+  "homepage": "https://github.com/RudraKalsariya/-Storing-Design-Liberary#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
+    "express": "^4.22.3",
+    "multer": "^2.4.0",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.5"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  }
+}
