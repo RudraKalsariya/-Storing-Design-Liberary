@@ -255,11 +255,17 @@ function emptyLibrary() {
     'div',
     { class: 'empty' },
     el('h1', {}, 'Drop anything here.'),
-    el('p', {}, 'Posters, patterns, 3D renders, fonts, PDFs, links. Paste, drop or add them and each one is sorted into the right folder for you. New folders appear as your collection grows.'),
+    el(
+      'p',
+      {},
+      state.ai.enabled
+        ? 'Posters, patterns, 3D renders, fonts, PDFs, links. Paste, drop or add them and each one is sorted into the right folder for you. New folders appear as your collection grows.'
+        : 'Posters, patterns, 3D renders, fonts, PDFs, links. Paste, drop or add them and pick a folder. Turn on auto-sorting in Settings to have Claude file them for you.',
+    ),
     el(
       'div',
       { class: 'hint' },
-      el('button', { class: 'pill', onclick: () => document.getElementById('picker').click() }, 'Choose files'),
+      el('button', { class: 'pill', onclick: () => openAddDialog() }, 'Choose files'),
       el('span', { class: 'pill' }, 'or paste ', el('kbd', {}, navigator.platform.includes('Mac') ? '⌘V' : 'Ctrl V')),
     ),
   );
@@ -292,12 +298,25 @@ function foldersView() {
     .filter((cat) => terms.every((t) => `${cat.name} ${cat.description}`.toLowerCase().includes(t)))
     .sort((a, b) => (latestBy.get(b.name) || b.createdAt).localeCompare(latestBy.get(a.name) || a.createdAt));
 
-  if (!cats.length) return el('div', { class: 'quiet' }, state.categories.length ? 'No folders match.' : 'Folders appear here as things get sorted.');
+  if (!cats.length) {
+    return el(
+      'div',
+      { class: 'quiet' },
+      el('p', {}, state.categories.length ? 'No folders match.' : 'No folders yet.'),
+      !state.categories.length && el('button', { class: 'pill', onclick: newFolder }, 'New folder'),
+    );
+  }
 
   return el(
     'div',
     {},
-    el('div', { class: 'heading' }, el('h1', {}, 'Folders'), el('p', {}, `${plural(state.categories.length, 'folder')}, made and filled automatically`)),
+    el(
+      'div',
+      { class: 'heading' },
+      el('h1', {}, 'Folders'),
+      el('p', {}, plural(state.categories.length, 'folder')),
+      el('div', { class: 'tools' }, el('button', { class: 'pill', onclick: newFolder }, 'New folder')),
+    ),
     el(
       'div',
       { class: 'folders' },
@@ -368,6 +387,18 @@ window.addEventListener('resize', () => {
 });
 
 // ---------- folder actions ----------
+
+async function newFolder() {
+  const name = prompt('New folder name');
+  if (!name?.trim()) return;
+  try {
+    const { category } = await api('/api/categories', { method: 'POST', body: { name } });
+    await refresh();
+    location.hash = folderHref(category.name);
+  } catch (e) {
+    toast(e.message);
+  }
+}
 
 async function renameFolder(cat) {
   const name = prompt('Rename folder (use the name of another folder to merge into it)', cat.name);
@@ -459,7 +490,8 @@ function stageFor(item) {
 function whyText(item) {
   if (item.status === 'processing') return 'Sorting…';
   if (item.status === 'error' || item.error) return item.error || 'Something went wrong.';
-  return { ai: 'Sorted by Claude', rule: `${KIND_LABEL[item.kind] || 'Files'}s always go here`, you: 'Moved here by you' }[item.sortedBy] || '';
+  if (item.sortedBy === 'fallback') return 'Waiting for a folder. Pick one above.';
+  return { ai: 'Sorted by Claude', rule: `${KIND_LABEL[item.kind] || 'Files'}s always go here`, you: 'Put here by you' }[item.sortedBy] || '';
 }
 
 function renderViewer() {
@@ -561,11 +593,15 @@ function renderViewer() {
       item.url
         ? el('a', { class: 'pill', href: item.url, target: '_blank', rel: 'noopener' }, 'Visit page')
         : item.src && el('a', { class: 'pill', href: item.src, target: '_blank', rel: 'noopener' }, 'Open original'),
-      item.src && item.kind !== 'link' && el('a', { class: 'pill', href: item.src, download: item.originalName || '' }, 'Download'),
+      window.desktop
+        ? item.file && el('button', { class: 'pill', onclick: () => window.desktop.showItem(item.file) }, window.desktop.platform === 'darwin' ? 'Show in Finder' : 'Show in folder')
+        : item.src && item.kind !== 'link' && el('a', { class: 'pill', href: item.src, download: item.originalName || '' }, 'Download'),
+      state.ai.enabled &&
       el(
         'button',
         {
           class: 'pill',
+          title: 'Ask Claude to pick the folder again',
           disabled: item.status === 'processing',
           onclick: () => api(`/api/items/${item.id}/resort`, { method: 'POST' }).catch((e) => toast(e.message)),
         },
@@ -624,11 +660,47 @@ function toast(content, { thumb, badge, action, duration = 3200 } = {}) {
   return { remove, set: (text) => (node.querySelector('span').textContent = text) };
 }
 
+// ---------- sheets (the Add and Settings dialogs) ----------
+
+let openSheetState = null;
+
+function openSheet(title, body, { onClose } = {}) {
+  closeSheet();
+  const sheet = el(
+    'div',
+    { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+    el('div', { class: 'sheet-head' }, el('h2', {}, title), el('button', { class: 'round ghost small', 'aria-label': 'Close', onclick: () => closeSheet() }, closeIcon())),
+    body,
+  );
+  const backdrop = el('div', { class: 'sheet-backdrop', onmousedown: (e) => e.target === backdrop && closeSheet() }, sheet);
+  document.body.append(backdrop);
+  openSheetState = { backdrop, onClose };
+  return sheet;
+}
+
+function closeSheet() {
+  if (!openSheetState) return;
+  const { backdrop, onClose } = openSheetState;
+  openSheetState = null;
+  backdrop.remove();
+  onClose?.();
+}
+
+function closeIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.innerHTML = '<path d="M6 6l12 12M18 6 6 18"/>';
+  return svg;
+}
+
 // ---------- adding things ----------
 
 const isImageFile = (f) => f.type.startsWith('image/') && !f.type.includes('heic');
+const AUTO = '__auto';
+const NEW = '__new';
 
-async function uploadFiles(fileList) {
+/** `category` is the folder you picked; leave it out to let Claude sort. */
+async function uploadFiles(fileList, category) {
   const files = [...fileList];
   if (!files.length) return;
   const t = toast(`Adding ${plural(files.length, 'thing')}…`, { duration: 0 });
@@ -637,6 +709,7 @@ async function uploadFiles(fileList) {
     for (let i = 0; i < files.length; i += 12) {
       const chunk = files.slice(i, i + 12);
       const fd = new FormData();
+      if (category) fd.append('category', category);
       chunk.forEach((f, j) => fd.append('files', f, f.name || `pasted-${Date.now()}-${j}.png`));
       const { results } = await api('/api/upload', { method: 'POST', body: fd });
       results.forEach(({ item, duplicate }, j) => {
@@ -645,7 +718,7 @@ async function uploadFiles(fileList) {
         // Live updates may already have delivered a newer (even sorted) version of this item.
         if (!state.items.has(item.id)) state.items.set(item.id, item);
       });
-      if (route().view === 'folders') location.hash = '#/';
+      if (route().view === 'folders') location.hash = category ? folderHref(category) : '#/';
       scheduleRender();
     }
     if (dupes) toast(dupes === files.length ? 'Already in your library' : `${plural(dupes, 'duplicate')} skipped`);
@@ -656,17 +729,17 @@ async function uploadFiles(fileList) {
   }
 }
 
-async function addText(text) {
+async function addText(text, category) {
   const value = text.trim();
   if (!value) return;
   const isUrl = /^https?:\/\/\S+$/i.test(value);
   const t = toast(isUrl ? 'Saving link…' : 'Saving note…', { duration: 0 });
   try {
-    const { results } = await api('/api/paste', { method: 'POST', body: { text: value } });
+    const { results } = await api('/api/paste', { method: 'POST', body: { text: value, category } });
     const { item, duplicate } = results[0];
     if (duplicate) toast('Already in your library');
     else if (!state.items.has(item.id)) state.items.set(item.id, item);
-    if (route().view === 'folders') location.hash = '#/';
+    if (route().view === 'folders') location.hash = category ? folderHref(category) : '#/';
     scheduleRender();
   } catch (e) {
     toast(e.message);
@@ -675,6 +748,218 @@ async function addText(text) {
   }
 }
 
+/**
+ * Pasting or dropping straight onto the page:
+ * inside a folder it goes into that folder, otherwise Claude sorts it,
+ * and with auto-sorting off you're asked which folder.
+ */
+function quickAdd({ files, text }) {
+  if (addDialog) return addDialog.stage({ files, text });
+  const r = route();
+  if (r.view === 'folder') return files ? uploadFiles(files, r.name) : addText(text, r.name);
+  if (state.ai.enabled) return files ? uploadFiles(files) : addText(text);
+  openAddDialog({ files, text });
+}
+
+let addDialog = null;
+
+function openAddDialog({ files = [], text = '' } = {}) {
+  const staged = [];
+  const urls = [];
+  const r = route();
+  const cats = [...state.categories].sort((a, b) => a.name.localeCompare(b.name));
+  let lastFolder = null;
+  try {
+    lastFolder = localStorage.getItem('lastFolder');
+  } catch {}
+
+  const list = el('div', { class: 'staged' });
+  const linkInput = el('input', { class: 'field-input', type: 'text', placeholder: 'Or paste a link or a note', value: text || '', oninput: update });
+  const newFolderInput = el('input', { class: 'field-input', type: 'text', placeholder: 'New folder name', hidden: true, oninput: update });
+  const addButton = el('button', { class: 'pill solid', onclick: submit }, 'Add');
+  const filePicker = el('input', { type: 'file', multiple: true, hidden: true, onchange: () => (stage({ files: filePicker.files }), (filePicker.value = '')) });
+
+  const defaultTarget =
+    r.view === 'folder' ? r.name : state.ai.enabled ? AUTO : cats.some((c) => c.name === lastFolder) ? lastFolder : cats.length ? cats[0].name : NEW;
+  const select = el(
+    'select',
+    { class: 'field-input', 'aria-label': 'Folder', onchange: update },
+    el('option', { value: AUTO, disabled: !state.ai.enabled, selected: defaultTarget === AUTO }, state.ai.enabled ? '✦ Sort automatically' : '✦ Sort automatically (turn on in Settings)'),
+    cats.map((c) => el('option', { value: c.name, selected: defaultTarget === c.name }, c.name)),
+    el('option', { value: NEW, selected: defaultTarget === NEW }, '+ New folder…'),
+  );
+
+  const drop = el(
+    'button',
+    { class: 'dropzone', onclick: () => filePicker.click() },
+    el('b', {}, 'Choose files'),
+    el('span', {}, ' or drop them here'),
+  );
+
+  function stage({ files: more, text: moreText }) {
+    for (const f of more || []) {
+      staged.push(f);
+      urls.push(isImageFile(f) ? URL.createObjectURL(f) : null);
+    }
+    if (moreText && !linkInput.value.trim()) linkInput.value = moreText;
+    renderStaged();
+    update();
+  }
+
+  function renderStaged() {
+    list.replaceChildren(
+      ...staged.map((f, i) =>
+        el(
+          'div',
+          { class: 'staged-item', title: f.name },
+          urls[i] ? el('img', { src: urls[i], alt: '' }) : el('span', {}, (f.name.split('.').pop() || 'file').slice(0, 5).toUpperCase()),
+          el('button', { class: 'remove', 'aria-label': `Remove ${f.name}`, onclick: () => (staged.splice(i, 1), urls.splice(i, 1), renderStaged(), update()) }, '×'),
+        ),
+      ),
+    );
+    list.hidden = !staged.length;
+  }
+
+  function target() {
+    if (select.value === AUTO) return undefined;
+    if (select.value === NEW) return newFolderInput.value.trim();
+    return select.value;
+  }
+
+  function update() {
+    newFolderInput.hidden = select.value !== NEW;
+    const n = staged.length + (linkInput.value.trim() ? 1 : 0);
+    addButton.textContent = n ? `Add ${plural(n, 'item')}` : 'Add';
+    addButton.disabled = !n || (select.value === NEW && !newFolderInput.value.trim());
+  }
+
+  function submit() {
+    const category = target();
+    const files = [...staged];
+    const link = linkInput.value.trim();
+    if (category) {
+      try {
+        localStorage.setItem('lastFolder', category);
+      } catch {}
+    }
+    closeSheet();
+    if (files.length) uploadFiles(files, category);
+    if (link) addText(link, category);
+  }
+
+  const body = el(
+    'div',
+    { class: 'sheet-body' },
+    drop,
+    filePicker,
+    list,
+    linkInput,
+    el('div', { class: 'field' }, el('label', {}, 'Put it in'), select, newFolderInput),
+    el('div', { class: 'sheet-actions' }, el('button', { class: 'pill', onclick: () => closeSheet() }, 'Cancel'), addButton),
+  );
+
+  openSheet('Add to library', body, {
+    onClose: () => {
+      urls.forEach((u) => u && URL.revokeObjectURL(u));
+      addDialog = null;
+    },
+  });
+  addDialog = { stage };
+  stage({ files, text });
+  if (select.value === NEW) newFolderInput.focus();
+}
+
+// ---------- settings ----------
+
+async function openSettings() {
+  let s;
+  try {
+    s = await api('/api/settings');
+  } catch (e) {
+    return toast(e.message);
+  }
+  const keyInput = el('input', { class: 'field-input', type: 'password', placeholder: s.hasKey ? `Saved key ${s.keyHint} — paste a new one to replace it` : 'sk-ant-…', autocomplete: 'off', spellcheck: false });
+  const autoSort = el('input', { type: 'checkbox', checked: s.autoSort });
+  const model = el('select', { class: 'field-input' }, s.models.map((m) => el('option', { value: m.id, selected: m.id === s.model }, m.label)));
+  const error = el('p', { class: 'form-error', hidden: true });
+  const saveButton = el('button', { class: 'pill solid', onclick: () => save() }, 'Save');
+
+  async function save(extra = {}) {
+    error.hidden = true;
+    saveButton.disabled = true;
+    saveButton.textContent = keyInput.value.trim() ? 'Checking key…' : 'Saving…';
+    try {
+      const body = { autoSort: autoSort.checked, model: model.value, ...extra };
+      if (keyInput.value.trim()) body.apiKey = keyInput.value.trim();
+      const { ai } = await api('/api/settings', { method: 'PUT', body });
+      state.ai = ai;
+      closeSheet();
+      toast(ai.enabled ? 'Auto-sorting is on' : ai.hasKey ? 'Auto-sorting is off' : 'Saved. You choose folders yourself');
+      render();
+    } catch (e) {
+      error.textContent = e.message;
+      error.hidden = false;
+    } finally {
+      saveButton.disabled = false;
+      saveButton.textContent = 'Save';
+    }
+  }
+
+  const desktop = window.desktop;
+  const body = el(
+    'div',
+    { class: 'sheet-body' },
+    el(
+      'section',
+      { class: 'settings-section' },
+      el('h3', {}, 'Auto-sorting'),
+      el(
+        'p',
+        { class: 'muted' },
+        'Optional. With an Anthropic API key, Claude looks at everything you add and files it into a folder for you, making new folders when needed. It costs about a cent per image, paid to Anthropic. Without a key you pick the folder yourself.',
+      ),
+      el('label', { class: 'toggle' }, autoSort, el('span', {}, 'Sort new things automatically')),
+      el(
+        'div',
+        { class: 'field' },
+        el('label', {}, 'API key'),
+        keyInput,
+        el('div', { class: 'hint' }, 'Get one at ', el('a', { href: 'https://platform.claude.com/settings/keys', target: '_blank', rel: 'noopener' }, 'platform.claude.com'), '. It stays on this computer.'),
+      ),
+      s.hasKey && el('button', { class: 'pill danger', onclick: () => ((keyInput.value = ''), save({ apiKey: '' })) }, 'Remove saved key'),
+      el('div', { class: 'field' }, el('label', {}, 'Model'), model),
+    ),
+    el(
+      'section',
+      { class: 'settings-section' },
+      el('h3', {}, 'Library folder'),
+      el('p', { class: 'path' }, s.libraryDir),
+      desktop
+        ? el(
+            'div',
+            { class: 'row' },
+            el('button', { class: 'pill', onclick: () => desktop.openLibraryFolder() }, desktop.platform === 'darwin' ? 'Open in Finder' : 'Open folder'),
+            el(
+              'button',
+              {
+                class: 'pill',
+                onclick: () => {
+                  if (confirm('Point the app at a different folder? Your current folder stays where it is. Move it there first in Finder/Explorer if you want to keep using it. The app will restart.')) desktop.chooseLibraryFolder();
+                },
+              },
+              'Change…',
+            ),
+          )
+        : el('p', { class: 'hint' }, 'To store it somewhere else, set LIBRARY_DIR in .env and restart.'),
+    ),
+    error,
+    el('div', { class: 'sheet-actions' }, el('button', { class: 'pill', onclick: () => closeSheet() }, 'Cancel'), saveButton),
+  );
+  openSheet('Settings', body);
+}
+
+// ---------- paste, drop, buttons ----------
+
 const typingInField = (e) => e.target.closest?.('input, textarea, select, [contenteditable]');
 
 document.addEventListener('paste', (e) => {
@@ -682,12 +967,12 @@ document.addEventListener('paste', (e) => {
   const files = [...(e.clipboardData?.files || [])];
   if (files.length) {
     e.preventDefault();
-    return uploadFiles(files);
+    return quickAdd({ files });
   }
-  const text = e.clipboardData?.getData('text/plain');
+  const text = e.clipboardData?.getData('text/plain')?.trim();
   if (text) {
     e.preventDefault();
-    addText(text);
+    quickAdd({ text });
   }
 });
 
@@ -698,7 +983,9 @@ document.addEventListener('dragenter', (e) => {
   if (!isExternalDrag(e)) return;
   e.preventDefault();
   dragDepth++;
-  dropEl.hidden = false;
+  const r = route();
+  dropEl.firstElementChild.textContent = r.view === 'folder' ? `Drop to add to ${r.name}` : 'Drop to add to your library';
+  dropEl.hidden = Boolean(addDialog); // the Add dialog is its own drop target
 });
 document.addEventListener('dragover', (e) => isExternalDrag(e) && e.preventDefault());
 document.addEventListener('dragleave', () => {
@@ -710,20 +997,16 @@ document.addEventListener('drop', (e) => {
   dragDepth = 0;
   dropEl.hidden = true;
   const dt = e.dataTransfer;
-  if (dt.files?.length) return uploadFiles(dt.files);
+  if (dt.files?.length) return quickAdd({ files: [...dt.files] });
   // Dragged from another browser tab: prefer the actual image over the page link.
   const html = dt.getData('text/html');
   const imgSrc = html && new DOMParser().parseFromString(html, 'text/html').querySelector('img')?.src;
   const url = (imgSrc && /^https?:/.test(imgSrc) && imgSrc) || dt.getData('text/uri-list').split('\n').find((l) => l && !l.startsWith('#')) || dt.getData('text/plain');
-  if (url) addText(url);
+  if (url) quickAdd({ text: url });
 });
 
-const picker = document.getElementById('picker');
-document.getElementById('add').addEventListener('click', () => picker.click());
-picker.addEventListener('change', () => {
-  uploadFiles(picker.files);
-  picker.value = '';
-});
+document.getElementById('add').addEventListener('click', () => openAddDialog());
+document.getElementById('settings').addEventListener('click', () => openSettings());
 
 // ---------- keyboard & search ----------
 
@@ -737,6 +1020,10 @@ searchInput.addEventListener('input', () => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (openSheetState) {
+    if (e.key === 'Escape') closeSheet();
+    return;
+  }
   if (state.viewer && !typingInField(e)) {
     if (e.key === 'Escape') closeViewer();
     if (e.key === 'ArrowLeft') stepViewer(-1);
@@ -781,10 +1068,12 @@ function connectEvents() {
     if (state.viewer?.id === item.id) renderViewer();
   });
   es.addEventListener('sorted', (e) => {
-    const { id, category, created, previous } = JSON.parse(e.data);
+    const { id, category, created, previous, by } = JSON.parse(e.data);
     const item = state.items.get(id);
     const thumb = item && imageFor(item);
-    const verb = previous && previous === category ? 'Still belongs in' : 'Sorted into';
+    // Things you put somewhere yourself don't need announcing, unless you're elsewhere.
+    if (by === 'you' && route().view === 'folder' && route().name === category) return;
+    const verb = by === 'you' || by === 'fallback' ? 'Added to' : previous && previous === category ? 'Still belongs in' : 'Sorted into';
     toast(`${verb} ${category}`, {
       thumb,
       badge: created ? 'New folder' : null,
@@ -796,6 +1085,10 @@ function connectEvents() {
     state.items.delete(id);
     tileCache.delete(id);
     scheduleRender();
+  });
+  es.addEventListener('settings', (e) => {
+    state.ai = JSON.parse(e.data);
+    render();
   });
   es.addEventListener('categories', (e) => {
     state.categories = JSON.parse(e.data);
@@ -813,12 +1106,8 @@ async function refresh() {
   state.ai = data.ai;
   state.categories = data.categories;
   state.items = new Map(data.items.map((i) => [i.id, i]));
-  const notice = document.getElementById('notice');
-  notice.hidden = state.ai.enabled;
-  if (!state.ai.enabled) {
-    notice.replaceChildren('Auto-sorting is off. Add your ', el('code', {}, 'ANTHROPIC_API_KEY'), ' to ', el('code', {}, '.env'), ' and restart — until then new things land in Unsorted.');
-  }
   render();
 }
 
+if (window.desktop) document.documentElement.classList.add('desktop', `os-${window.desktop.platform}`);
 refresh().then(connectEvents);

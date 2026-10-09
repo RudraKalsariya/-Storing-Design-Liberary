@@ -1,169 +1,17 @@
-import path from 'node:path';
-import express from 'express';
-import multer from 'multer';
-import { ROOT, PORT, HOST, LIBRARY_DIR, INBOX_DIR, AI_ENABLED, MODEL } from './src/config.js';
-import * as store from './src/store.js';
-import { ingestFile, ingestText, resort, resumePending } from './src/ingest.js';
+// Runs the library in your browser: `npm start`, then open the printed address.
+// (The desktop app starts the same server from electron/main.js.)
+import { PORT, HOST, LIBRARY_DIR, settings, aiEnabled } from './src/config.js';
+import { startServer } from './src/server.js';
+import { flush } from './src/store.js';
 
-store.load();
-
-const app = express();
-app.use(express.json({ limit: '5mb' }));
-app.use(express.static(path.join(ROOT, 'public')));
-// The library itself, so the app can show your files. dotfiles are needed for .thumbs.
-app.use('/files', express.static(LIBRARY_DIR, { dotfiles: 'allow', index: false, maxAge: '1h' }));
-
-// No size limit: the only ceiling is your disk.
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: INBOX_DIR,
-    filename: (_req, _file, cb) => cb(null, `upload-${store.newId()}`),
-  }),
-});
-
-const wrap = (fn) => (req, res, next) => fn(req, res).catch(next);
-
-function publicItem(item) {
-  const url = (rel) => rel && `/files/${rel.split('/').map(encodeURIComponent).join('/')}`;
-  const { hash, inbox, ...rest } = item;
-  return { ...rest, src: url(item.file || item.inbox), thumbSrc: url(item.thumb) };
-}
-
-function publicCategory(c) {
-  const items = store.categoryItems(c.name);
-  return { ...c, count: items.length, latest: items.map((i) => i.createdAt).sort().at(-1) || c.createdAt };
-}
-
-app.get(
-  '/api/library',
-  wrap(async (_req, res) => {
-    res.json({
-      ai: { enabled: AI_ENABLED, model: MODEL },
-      libraryDir: LIBRARY_DIR,
-      categories: store.listCategories().map(publicCategory),
-      items: store.allItems().map(publicItem),
-    });
-  }),
-);
-
-app.post(
-  '/api/upload',
-  upload.array('files'),
-  wrap(async (req, res) => {
-    const results = [];
-    for (const f of req.files || []) {
-      // Browsers send filenames as latin1; recover UTF-8 names like "café.png".
-      const name = Buffer.from(f.originalname, 'latin1').toString('utf8');
-      const { item, duplicate } = await ingestFile(f.path, name, f.mimetype);
-      results.push({ item: publicItem(item), duplicate });
-    }
-    res.json({ results });
-  }),
-);
-
-app.post(
-  '/api/paste',
-  wrap(async (req, res) => {
-    const { item, duplicate } = await ingestText(String(req.body?.text || ''));
-    res.json({ results: [{ item: publicItem(item), duplicate }] });
-  }),
-);
-
-app.patch(
-  '/api/items/:id',
-  wrap(async (req, res) => {
-    const { category, title, description, tags } = req.body || {};
-    if (!store.getItem(req.params.id)) throw store.httpError(404, 'Item not found');
-    const patch = {};
-    if (typeof title === 'string') patch.title = title.trim();
-    if (typeof description === 'string') patch.description = description.trim();
-    if (Array.isArray(tags)) patch.tags = tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean);
-    let item = store.updateItem(req.params.id, patch);
-    if (typeof category === 'string' && category.trim()) item = await store.moveItem(req.params.id, category.trim());
-    res.json({ item: publicItem(item) });
-  }),
-);
-
-app.post(
-  '/api/items/:id/resort',
-  wrap(async (req, res) => {
-    res.json({ item: publicItem(resort(req.params.id)) });
-  }),
-);
-
-app.delete(
-  '/api/items/:id',
-  wrap(async (req, res) => {
-    await store.deleteItem(req.params.id);
-    res.json({ ok: true });
-  }),
-);
-
-app.post(
-  '/api/categories',
-  wrap(async (req, res) => {
-    const name = String(req.body?.name || '').trim();
-    if (!name) throw store.httpError(400, 'Folder needs a name');
-    const { category } = await store.ensureCategory(name, { description: String(req.body?.description || ''), createdBy: 'you' });
-    res.json({ category: publicCategory(category) });
-  }),
-);
-
-app.patch(
-  '/api/categories/:name',
-  wrap(async (req, res) => {
-    const { name, description } = req.body || {};
-    const category = await store.renameCategory(req.params.name, name, description);
-    res.json({ category: publicCategory(category) });
-  }),
-);
-
-app.delete(
-  '/api/categories/:name',
-  wrap(async (req, res) => {
-    await store.removeCategory(req.params.name);
-    res.json({ ok: true });
-  }),
-);
-
-// Live updates: the page watches this to see things get sorted.
-app.get('/api/events', (req, res) => {
-  res.set({ 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-  res.flushHeaders();
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  const onItem = (item) => send('item', publicItem(item));
-  const onSorted = (info) => send('sorted', info);
-  const onDeleted = (id) => send('deleted', { id });
-  const onCategories = () => send('categories', store.listCategories().map(publicCategory));
-  store.events.on('item', onItem);
-  store.events.on('sorted', onSorted);
-  store.events.on('deleted', onDeleted);
-  store.events.on('categories', onCategories);
-  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
-  req.on('close', () => {
-    clearInterval(ping);
-    store.events.off('item', onItem);
-    store.events.off('sorted', onSorted);
-    store.events.off('deleted', onDeleted);
-    store.events.off('categories', onCategories);
-  });
-});
-
-app.use((err, _req, res, _next) => {
-  if (!err.status) console.error(err);
-  res.status(err.status || 500).json({ error: err.message || 'Something went wrong' });
-});
+const { url } = await startServer({ port: PORT, host: HOST });
+console.log(`\n  Design Library  →  ${url}`);
+console.log(`  Files live in     ${LIBRARY_DIR}`);
+console.log(aiEnabled() ? `  Auto-sorting with ${settings.model}\n` : '  Auto-sorting is off: you choose folders (add an API key in Settings to turn it on)\n');
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
-    store.flush();
+    flush();
     process.exit(0);
   });
 }
-
-app.listen(PORT, HOST, () => {
-  console.log(`\n  Design Library  →  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-  console.log(`  Files live in     ${LIBRARY_DIR}`);
-  console.log(AI_ENABLED ? `  Auto-sorting with ${MODEL}\n` : '  Auto-sorting is off: add ANTHROPIC_API_KEY to .env\n');
-  resumePending();
-});

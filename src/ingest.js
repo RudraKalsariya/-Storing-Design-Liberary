@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
-import { INBOX_DIR, LIBRARY_DIR, CONCURRENCY } from './config.js';
+import { INBOX_DIR, LIBRARY_DIR, CONCURRENCY, aiEnabled } from './config.js';
 import * as store from './store.js';
 import { classify, ruleFor, IMAGE_EXTS, AIUnavailableError } from './classify.js';
 import { fontInfo } from './fontname.js';
@@ -91,8 +91,11 @@ function newItem(fields) {
 
 // ---------- intake ----------
 
-/** A file that has already been written somewhere inside the library folder. */
-export async function ingestFile(tmpPath, originalName, mime = '') {
+/**
+ * A file that has already been written somewhere inside the library folder.
+ * `target` is a folder you picked yourself; without one, the sorter decides.
+ */
+export async function ingestFile(tmpPath, originalName, mime = '', { target } = {}) {
   const ext = extOf(originalName) || MIME_EXT[mime.split(';')[0]] || '';
   const hash = await hashFile(tmpPath);
   const dup = store.findByHash(hash);
@@ -114,6 +117,7 @@ export async function ingestFile(tmpPath, originalName, mime = '') {
     size,
     hash,
     title: titleFromName(originalName),
+    target: target || undefined,
   });
   store.addItem(item);
   enqueue(id);
@@ -121,10 +125,10 @@ export async function ingestFile(tmpPath, originalName, mime = '') {
 }
 
 /** Pasted text: a link to an image/file, a link to a page, or just a note. */
-export async function ingestText(text) {
+export async function ingestText(text, { target } = {}) {
   const value = text.trim();
   if (!value) throw store.httpError(400, 'Nothing to save');
-  if (/^https?:\/\/\S+$/i.test(value)) return ingestUrl(value);
+  if (/^https?:\/\/\S+$/i.test(value)) return ingestUrl(value, { target });
 
   const hash = hashText(`note:${value}`);
   const dup = store.findByHash(hash);
@@ -133,13 +137,13 @@ export async function ingestText(text) {
   const inbox = `.inbox/${id}.txt`;
   await fsp.writeFile(path.join(LIBRARY_DIR, inbox), value);
   const firstLine = value.split('\n')[0].slice(0, 60);
-  const item = newItem({ id, kind: 'note', inbox, ext: '.txt', size: Buffer.byteLength(value), hash, text: value.slice(0, 5000), title: firstLine });
+  const item = newItem({ id, kind: 'note', inbox, ext: '.txt', size: Buffer.byteLength(value), hash, text: value.slice(0, 5000), title: firstLine, target: target || undefined });
   store.addItem(item);
   enqueue(id);
   return { item, duplicate: false };
 }
 
-async function ingestUrl(url) {
+async function ingestUrl(url, { target }) {
   const hash = hashText(`url:${url}`);
   const dup = store.findByHash(hash);
   if (dup) return { item: dup, duplicate: true };
@@ -159,7 +163,7 @@ async function ingestUrl(url) {
     if (!extOf(name)) name = `${name || 'download'}.${MIME_EXT[type.split(';')[0]] || 'bin'}`;
     const tmp = path.join(INBOX_DIR, `download-${store.newId()}`);
     await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
-    return ingestFile(tmp, name, type);
+    return ingestFile(tmp, name, type, { target });
   }
 
   // Otherwise it's a page: keep it as a bookmark with its preview image.
@@ -185,6 +189,7 @@ async function ingestUrl(url) {
     pageDescription: meta.description || '',
     previewUrl: meta.image || '',
     title: meta.title || host,
+    target: target || undefined,
   });
   store.addItem(item);
   enqueue(id);
@@ -257,7 +262,7 @@ async function paletteOf(img) {
 }
 
 /** Thumbnail, size, colors, and a right-sized copy for Claude to look at. */
-async function lookAtImage(input, id, { svg = false } = {}) {
+async function lookAtImage(input, id, { svg = false, forAI = true } = {}) {
   const img = sharp(input, { limitInputPixels: false, ...(svg ? { density: 200 } : {}) }).rotate();
   const meta = await img.metadata();
   const swap = (meta.orientation || 1) >= 5;
@@ -267,7 +272,7 @@ async function lookAtImage(input, id, { svg = false } = {}) {
   const thumb = store.thumbPathFor(id);
   await img.clone().resize({ width: 720, withoutEnlargement: true }).webp({ quality: 82 }).toFile(thumb.abs);
   const colors = await paletteOf(img).catch(() => []);
-  const forClaude = await img
+  const forClaude = forAI && await img
     .clone()
     .resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true })
     .webp({ quality: 85 })
@@ -275,17 +280,17 @@ async function lookAtImage(input, id, { svg = false } = {}) {
 
   return {
     patch: { width, height, thumb: thumb.rel, colors },
-    block: { type: 'image', source: { type: 'base64', media_type: 'image/webp', data: forClaude.toString('base64') } },
+    block: forClaude && { type: 'image', source: { type: 'base64', media_type: 'image/webp', data: forClaude.toString('base64') } },
   };
 }
 
-async function look(item, src) {
+async function look(item, src, forAI) {
   const ext = item.ext.slice(1);
   const name = item.originalName ? `Original filename: ${item.originalName}` : '';
 
   if (item.kind === 'image') {
     try {
-      const { patch, block } = await lookAtImage(src, item.id, { svg: ext === 'svg' });
+      const { patch, block } = await lookAtImage(src, item.id, { svg: ext === 'svg', forAI });
       return { patch, blocks: [block], context: name };
     } catch {
       return { patch: {}, blocks: null, context: name, unreadable: 'This image format could not be read.' };
@@ -294,7 +299,7 @@ async function look(item, src) {
 
   if (item.kind === 'pdf') {
     const blocks = [];
-    if (item.size <= MAX_PDF_BYTES) {
+    if (forAI && item.size <= MAX_PDF_BYTES) {
       const data = (await fsp.readFile(src)).toString('base64');
       blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } });
     }
@@ -313,7 +318,7 @@ async function look(item, src) {
   if (item.kind === 'link') {
     const blocks = [];
     let patch = {};
-    if (item.thumb) {
+    if (item.thumb && forAI) {
       // Re-sorting: reuse the preview we already downloaded.
       const buf = await fsp.readFile(path.join(LIBRARY_DIR, item.thumb));
       blocks.push({ type: 'image', source: { type: 'base64', media_type: 'image/webp', data: buf.toString('base64') } });
@@ -321,9 +326,9 @@ async function look(item, src) {
       try {
         const res = await fetch(item.previewUrl, { signal: AbortSignal.timeout(20000), headers: { 'user-agent': UA } });
         if (res.ok) {
-          const looked = await lookAtImage(Buffer.from(await res.arrayBuffer()), item.id);
+          const looked = await lookAtImage(Buffer.from(await res.arrayBuffer()), item.id, { forAI });
           patch = looked.patch;
-          blocks.push(looked.block);
+          if (looked.block) blocks.push(looked.block);
         }
       } catch {}
     }
@@ -358,12 +363,19 @@ async function processItem(id) {
   const previousCategory = item.category;
   try {
     const src = store.absPath(item);
-    const seen = await look(item, src);
+    const useAI = !item.target && aiEnabled();
+    const seen = await look(item, src, useAI);
     Object.assign(item, seen.patch);
 
     let decision;
-    if (seen.rule) {
+    if (item.target) {
+      decision = { category: item.target, sortedBy: 'you' };
+    } else if (seen.rule) {
       decision = { category: seen.rule.category, categoryDescription: seen.rule.description, sortedBy: 'rule' };
+    } else if (!useAI) {
+      // Auto-sorting is off: it waits in Unsorted until you pick a folder.
+      decision = { category: store.UNSORTED, categoryDescription: 'Things waiting for a folder.', sortedBy: 'fallback' };
+      delete item.error;
     } else {
       try {
         if (seen.unreadable) throw new Error(seen.unreadable);
@@ -373,25 +385,26 @@ async function processItem(id) {
         if (!(err instanceof AIUnavailableError)) console.error(`[sort] ${item.originalName || item.url || id}:`, err.message);
         decision = {
           category: store.UNSORTED,
-          categoryDescription: 'Things that could not be sorted automatically yet. Open one and press Re-sort to try again.',
+          categoryDescription: 'Things waiting for a folder.',
           sortedBy: 'fallback',
         };
-        item.error = err instanceof AIUnavailableError ? `${err.message} — add one to .env to enable auto-sorting.` : err.message;
+        item.error = err instanceof AIUnavailableError ? `${err.message}. Check your API key in Settings.` : err.message;
       }
     }
 
     const { category, created } = await store.ensureCategory(decision.category, {
       description: decision.categoryDescription,
-      createdBy: decision.sortedBy === 'ai' ? 'ai' : 'rule',
+      createdBy: { ai: 'ai', you: 'you' }[decision.sortedBy] || 'rule',
     });
     if (decision.title) item.title = decision.title;
     if (decision.description) item.description = decision.description;
     if (decision.tags?.length) item.tags = decision.tags;
-    if (!item.title) item.title = titleFromName(item.originalName) || category.name.replace(/s$/, '');
+    if (!item.title) item.title = titleFromName(item.originalName) || 'Untitled';
+    delete item.target;
 
     await store.placeFile(item, src, category.name);
     store.updateItem(id, { status: 'ready', sortedBy: decision.sortedBy, sortedAt: new Date().toISOString() });
-    store.events.emit('sorted', { id, category: category.name, created, previous: previousCategory });
+    store.events.emit('sorted', { id, category: category.name, created, previous: previousCategory, by: decision.sortedBy });
     if (previousCategory && previousCategory !== category.name) await store.pruneIfEmpty(previousCategory);
   } catch (err) {
     console.error(`[sort] failed for ${id}:`, err);
@@ -403,6 +416,7 @@ async function processItem(id) {
 export function resort(id) {
   const item = store.getItem(id);
   if (!item) throw store.httpError(404, 'Item not found');
+  if (!aiEnabled()) throw store.httpError(400, 'Turn on auto-sorting in Settings to use Re-sort');
   store.updateItem(id, { status: 'processing' });
   enqueue(id);
   return item;

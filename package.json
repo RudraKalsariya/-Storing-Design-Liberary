@@ -2,10 +2,14 @@
   "name": "design-library",
   "version": "1.0.0",
   "description": "A personal design library that sorts itself.",
-  "main": "server.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "app": "electron .",
+    "build:mac": "electron-builder --mac --publish never",
+    "build:win": "electron-builder --win --publish never",
+    "build:linux": "electron-builder --linux --publish never"
   },
   "repository": {
     "type": "git",
@@ -26,5 +30,58 @@
   "type": "module",
   "engines": {
     "node": ">=20.12"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "author": {
+    "name": "Rudra Kalsariya"
+  },
+  "build": {
+    "appId": "com.rudrakalsariya.designlibrary",
+    "productName": "Design Library",
+    "artifactName": "Design-Library-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "server.js",
+      "src/**",
+      "public/**",
+      "electron/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/sharp/**",
+      "node_modules/@img/**"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.graphics-design",
+      "identity": null
+    },
+    "dmg": {
+      "title": "Design Library"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Design Library"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics"
+    }
   }
 }

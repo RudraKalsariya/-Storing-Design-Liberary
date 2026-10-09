@@ -5,7 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
-import { MODEL, EFFORT, AI_ENABLED } from './config.js';
+import { settings } from './config.js';
 import { listCategories, categoryItems } from './store.js';
 
 // File types we never need to look at to sort.
@@ -50,7 +50,28 @@ How to choose the folder:
 The title should help the designer find this again later, so name what is distinctive about it ("Swiss Grid Jazz Poster", "Chrome Blob Render"), never a generic label like "Image" or "Design".`;
 
 let client = null;
-const getClient = () => (client ??= new Anthropic({ maxRetries: 4 }));
+let clientKey = null;
+function getClient() {
+  if (!client || clientKey !== settings.apiKey) {
+    client = new Anthropic({ apiKey: settings.apiKey, maxRetries: 4 });
+    clientKey = settings.apiKey;
+  }
+  return client;
+}
+
+/** Checks a key before saving it, so a typo shows up in Settings rather than as failed sorts. */
+export async function verifyKey(apiKey, model) {
+  try {
+    await new Anthropic({ apiKey, maxRetries: 1 }).models.retrieve(model);
+    return null;
+  } catch (err) {
+    if (err instanceof Anthropic.AuthenticationError) return 'That API key was not accepted. Check that you copied all of it.';
+    if (err instanceof Anthropic.PermissionDeniedError) return 'This key is not allowed to use the API yet. Check billing in the Claude Console.';
+    if (err instanceof Anthropic.NotFoundError) return 'This key cannot use that model. Pick another model.';
+    if (err instanceof Anthropic.APIConnectionError) return 'Could not reach Anthropic. Check your internet connection.';
+    return err.message;
+  }
+}
 
 // Models that accept server-side refusal fallbacks.
 const FALLBACK_MODELS = ['claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-sonnet-5-5'];
@@ -76,13 +97,13 @@ function describeFolders() {
  * @param {string} context  extra plain-text context (filename, URL, etc.)
  */
 export async function classify(blocks, context) {
-  if (!AI_ENABLED) throw new AIUnavailableError('No ANTHROPIC_API_KEY set');
+  if (!settings.apiKey) throw new AIUnavailableError('No API key added');
 
   const params = {
-    model: MODEL,
+    model: settings.model,
     max_tokens: 4000,
     system: SYSTEM_PROMPT,
-    output_config: { format: betaZodOutputFormat(Classification), ...(EFFORT ? { effort: EFFORT } : {}) },
+    output_config: { format: betaZodOutputFormat(Classification), ...(settings.effort ? { effort: settings.effort } : {}) },
     messages: [
       {
         role: 'user',
@@ -90,7 +111,7 @@ export async function classify(blocks, context) {
       },
     ],
   };
-  if (FALLBACK_MODELS.includes(MODEL)) {
+  if (FALLBACK_MODELS.includes(settings.model)) {
     params.betas = ['server-side-fallback-2026-07-01'];
     params.fallbacks = 'default';
   }
