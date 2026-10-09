@@ -10,10 +10,10 @@ The interface is deliberately minimal, inspired by [cosmos.so](https://www.cosmo
 
 1. Open the **Actions** tab of this repository and click the latest **Build desktop app** run with a green tick.
 2. Scroll down to **Artifacts** and download the one for your computer:
-   - **Design-Library-mac-apple-silicon**: Macs with an M1, M2, M3 or M4 chip
-   - **Design-Library-mac-intel**: older Intel Macs
-   - **Design-Library-windows**: Windows
-3. Unzip it and install:
+   - **…-mac-arm64.dmg**: Macs with an M1, M2, M3 or M4 chip
+   - **…-mac-x64.dmg**: older Intel Macs
+   - **…-win-x64.exe**: Windows
+3. Install it:
    - **Mac:** open the `.dmg` and drag **Design Library** into **Applications**.
    - **Windows:** run the `.exe` installer.
 
