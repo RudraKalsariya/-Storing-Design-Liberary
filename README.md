@@ -89,8 +89,8 @@ Installing a newer version over the old one keeps everything, because your libra
 To publish a new version:
 
 1. Raise the version number in `package.json` (`1.1.0` → `1.1.1` for fixes, `1.2.0` for new features).
-2. Commit, then push a tag with the same number: `git tag v1.2.0 && git push origin v1.2.0`.
-3. GitHub builds the Mac, Windows and Linux installers and publishes them on the Releases page, usually within 15 minutes.
+2. Commit and push.
+3. GitHub builds the Mac, Windows and Linux installers and, seeing a version that hasn't been released yet, publishes them on the Releases page as `v1.2.0`. This usually takes about 15 minutes. Pushes that don't change the version only make test builds.
 
 ## Run from source (for development)
 

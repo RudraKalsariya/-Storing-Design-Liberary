@@ -1,7 +1,7 @@
 # Builds the desktop app installers on GitHub's Mac, Windows and Linux machines.
 # Download them from the "Artifacts" section of a run on the Actions tab.
 # Each one is named Design-Library-<version>-<mac|win|linux>-<arm64|x64>.
-# Pushing a tag like v1.0.0 also publishes them as a GitHub Release.
+# Raising the version in package.json also publishes them as a GitHub Release.
 name: Build desktop app
 
 on:
@@ -49,20 +49,37 @@ jobs:
           archive: false
           if-no-files-found: error
 
+  # Publishes a GitHub Release whenever package.json has a version number that
+  # hasn't been released yet (or when a vX.Y.Z tag is pushed by hand).
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@v7
+      - id: version
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF" != "refs/tags/$tag" ] && git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "$tag is already released; nothing to publish."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.version.outputs.new == 'true'
+        uses: actions/download-artifact@v8
         with:
           path: installers
           merge-multiple: true
-      - uses: softprops/action-gh-release@v3
+      - if: steps.version.outputs.new == 'true'
+        uses: softprops/action-gh-release@v3
         with:
-          name: Design Library ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Design Library ${{ steps.version.outputs.tag }}
           files: installers/*
           generate_release_notes: true
           body: |
