@@ -43,7 +43,8 @@ if (!app.requestSingleInstanceLock()) {
       title: 'Design Library',
       show: false,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#0c0c0c' : '#ffffff',
-      ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 22 } } : {}),
+      // Mac: no title bar, the header is the drag area. Windows/Linux: the menu bar shows only when Alt is pressed.
+      ...(isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 22 } } : { autoHideMenuBar: true }),
       webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, sandbox: true },
     });
     mainWindow.loadURL(serverUrl);
