@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { INBOX_DIR, LIBRARY_DIR, CONCURRENCY, aiEnabled } from './config.js';
 import * as store from './store.js';
-import { classify, ruleFor, IMAGE_EXTS, AIUnavailableError } from './classify.js';
+import { classify, classifyFont, ruleFor, IMAGE_EXTS, AIUnavailableError } from './classify.js';
 import { fontInfo } from './fontname.js';
 
 const MAX_PDF_BYTES = 24 * 1024 * 1024;
@@ -347,8 +347,16 @@ async function look(item, src, forAI) {
   if (item.kind === 'font') {
     const info = fontInfo(await fsp.readFile(src));
     return {
-      patch: info ? { title: info.fullName || item.title, fontFamily: info.family, fontStyle: info.style, tags: [info.family, info.style].filter(Boolean).map((t) => t.toLowerCase()) } : {},
+      patch: info
+        ? {
+            title: info.fullName || item.title,
+            fontFamily: info.family,
+            fontStyle: info.style,
+            tags: [info.family, info.style, info.type && ({ sans: 'sans serif', mono: 'monospace' }[info.type] || info.type)].filter(Boolean).map((t) => t.toLowerCase()),
+          }
+        : {},
       rule: ruleFor(ext),
+      font: info,
     };
   }
 
@@ -370,6 +378,8 @@ async function processItem(id) {
     let decision;
     if (item.target) {
       decision = { category: item.target, sortedBy: 'you' };
+    } else if (item.kind === 'font') {
+      decision = { category: store.FONTS, sortedBy: 'rule', ...(await fontFolderFor(seen.font)) };
     } else if (seen.rule) {
       decision = { category: seen.rule.category, categoryDescription: seen.rule.description, sortedBy: 'rule' };
     } else if (!useAI) {
@@ -412,11 +422,32 @@ async function processItem(id) {
   }
 }
 
+/**
+ * Which Fonts subfolder a font goes in: the type stored in the file or hinted
+ * by its name, else Claude's guess from the name (if auto-sorting is on).
+ * Unknown fonts stay at the top of Fonts.
+ */
+async function fontFolderFor(info) {
+  if (!info) return {};
+  const byType = store.fontTypeFolder(info.type);
+  if (byType) return { category: byType, sortedBy: 'rule' };
+  if (!aiEnabled()) return {};
+  const subfolders = store.childrenOf(store.FONTS);
+  try {
+    const label = await classifyFont(info, subfolders.map(store.labelOf));
+    const match = subfolders.find((c) => store.labelOf(c) === label);
+    return match ? { category: match.name, sortedBy: 'ai' } : {};
+  } catch (err) {
+    if (!(err instanceof AIUnavailableError)) console.error(`[sort] font ${info.fullName}:`, err.message);
+    return {};
+  }
+}
+
 /** Ask the sorter again (e.g. after adding an API key, or if it guessed wrong). */
 export function resort(id) {
   const item = store.getItem(id);
   if (!item) throw store.httpError(404, 'Item not found');
-  if (!aiEnabled()) throw store.httpError(400, 'Turn on auto-sorting in Settings to use Re-sort');
+  if (!aiEnabled() && item.kind !== 'font') throw store.httpError(400, 'Turn on auto-sorting in Settings to use Re-sort');
   store.updateItem(id, { status: 'processing' });
   enqueue(id);
   return item;

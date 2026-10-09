@@ -8,8 +8,8 @@ The interface is deliberately minimal, inspired by [cosmos.so](https://www.cosmo
 
 ## Install the desktop app
 
-1. Open the **Actions** tab of this repository and click the latest **Build desktop app** run with a green tick.
-2. Scroll down to **Artifacts** and download the one for your computer:
+1. Open the **[Releases](https://github.com/RudraKalsariya/-Storing-Design-Liberary/releases/latest)** page of this repository.
+2. Under **Assets**, download the installer for your computer:
    - **…-mac-arm64.dmg**: Macs with an M1, M2, M3 or M4 chip
    - **…-mac-x64.dmg**: older Intel Macs
    - **…-win-x64.exe**: Windows
@@ -36,12 +36,21 @@ After that it opens like any other app.
 | Add with auto-sorting | With auto-sorting on, paste or drop anywhere on the main view |
 | Save something from a website | Drag the image from your browser into the window, or paste its link |
 | Make a folder | **Folders → New folder**, or **+ New folder…** in the Add dialog |
-| Move something | Open it and pick another folder at the top |
+| Move something | Open it and pick another folder at the top, or drag it onto a folder chip |
 | Find something | Press **/** and type. Search covers titles, tags, folders and note text |
 | Rename or merge folders | Open a folder and press **Rename**. Renaming it to an existing folder's name merges the two |
 | See the file on disk | Open an item and press **Show in Finder** (Mac) or **Show in folder** (Windows) |
 
 With auto-sorting off, things you paste or drop on the main view open the Add dialog so you can pick a folder.
+
+## Fonts
+
+**Fonts** is a permanent folder: it can't be renamed or deleted, and font files always go there. Inside it are subfolders for each type of font (**Sans Serif**, **Serif**, **Display**, **Script** and **Monospace** to start). You can rename or delete those, or add your own with **+ Subfolder**.
+
+- A new font goes straight into the matching subfolder when its type is clear, either from the classification stored in the font file or from its name ("Work Sans", "DM Mono"). With auto-sorting on, Claude also recognises well-known typefaces by name.
+- Fonts whose type isn't clear wait at the top of **Fonts**.
+- To arrange fonts, open **Fonts** and drag a font onto a subfolder chip, or open the font and pick a subfolder at the top. Dragging works for any item onto any folder chip.
+- On disk the subfolders are real folders: `Design Library/Fonts/Serif/…`.
 
 ## Auto-sorting (optional)
 
@@ -73,6 +82,16 @@ There is no storage limit beyond your disk. Originals are never changed. To keep
 
 Move and rename things inside the app rather than in Finder or Explorer, so the app's index stays in step with the folders.
 
+## Updating
+
+Installing a newer version over the old one keeps everything, because your library lives in `Documents/Design Library`, outside the app. Your settings are kept too. You can check which version you have at the bottom of **Settings**.
+
+To publish a new version:
+
+1. Raise the version number in `package.json` (`1.1.0` → `1.1.1` for fixes, `1.2.0` for new features).
+2. Commit, then push a tag with the same number: `git tag v1.2.0 && git push origin v1.2.0`.
+3. GitHub builds the Mac, Windows and Linux installers and publishes them on the Releases page, usually within 15 minutes.
+
 ## Run from source (for development)
 
 Needs [Node.js](https://nodejs.org/) 20.12 or newer.
@@ -85,7 +104,7 @@ npm start          # or: in your browser at http://localhost:4321
 
 In browser mode the library is stored in `./library` and settings in `./settings.json`. You can also preset things in a `.env` file (see `.env.example`).
 
-Build installers locally with `npm run build:mac`, `npm run build:win` or `npm run build:linux`; they appear in `dist/`. Pushing a tag like `v1.0.0` publishes the installers as a GitHub Release.
+Build installers locally with `npm run build:mac`, `npm run build:win` or `npm run build:linux`; they appear in `dist/`. Every push to GitHub also builds test installers, which you can download from that run's page on the **Actions** tab.
 
 ## Project layout
 

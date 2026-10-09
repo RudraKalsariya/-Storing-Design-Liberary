@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
@@ -7,6 +8,8 @@ import { ingestFile, ingestText, resort, resumePending } from './ingest.js';
 import { verifyKey } from './classify.js';
 
 store.load();
+
+const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -108,7 +111,10 @@ app.post(
   wrap(async (req, res) => {
     const name = String(req.body?.name || '').trim();
     if (!name) throw store.httpError(400, 'Folder needs a name');
-    const { category } = await store.ensureCategory(name, { description: String(req.body?.description || ''), createdBy: 'you' });
+    const parent = typeof req.body?.parent === 'string' && req.body.parent;
+    const category = parent
+      ? store.createSubfolder(parent, name)
+      : (await store.ensureCategory(name, { description: String(req.body?.description || ''), createdBy: 'you' })).category;
     res.json({ category: publicCategory(category) });
   }),
 );
@@ -138,6 +144,7 @@ app.get('/api/settings', (_req, res) => {
     model: settings.model,
     models: MODELS,
     libraryDir: LIBRARY_DIR,
+    version: VERSION,
   });
 });
 

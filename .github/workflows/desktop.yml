@@ -62,4 +62,17 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
+          name: Design Library ${{ github.ref_name }}
           files: installers/*
+          generate_release_notes: true
+          body: |
+            **Download the installer for your computer** from the list below:
+
+            - `…-mac-arm64.dmg`: Macs with an M1, M2, M3 or M4 chip
+            - `…-mac-x64.dmg`: Intel Macs
+            - `…-win-x64.exe`: Windows
+
+            Installing over an older version keeps your library: it lives in `Documents/Design Library`, outside the app.
+
+            First launch on a Mac: if it says the app is damaged or can't be opened, run `xattr -cr "/Applications/Design Library.app"` in Terminal, then open it again.
+            On Windows, if you see "Windows protected your PC", click **More info → Run anyway**.

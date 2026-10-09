@@ -79,7 +79,8 @@ const FALLBACK_MODELS = ['claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-1',
 export class AIUnavailableError extends Error {}
 
 function describeFolders() {
-  const cats = listCategories();
+  // Fonts subfolders are for font files only, so they're not offered for images.
+  const cats = listCategories().filter((c) => !c.parent);
   if (!cats.length) return 'There are no folders yet. This is the first item in the library, so create a folder for it.';
   return (
     'Existing folders:\n' +
@@ -96,20 +97,16 @@ function describeFolders() {
  * @param {Array} blocks  content blocks describing the item (image / document / text)
  * @param {string} context  extra plain-text context (filename, URL, etc.)
  */
-export async function classify(blocks, context) {
+/** One structured request to Claude; returns the parsed answer. */
+async function ask({ system, content, schema }) {
   if (!settings.apiKey) throw new AIUnavailableError('No API key added');
 
   const params = {
     model: settings.model,
     max_tokens: 4000,
-    system: SYSTEM_PROMPT,
-    output_config: { format: betaZodOutputFormat(Classification), ...(settings.effort ? { effort: settings.effort } : {}) },
-    messages: [
-      {
-        role: 'user',
-        content: [...blocks, { type: 'text', text: [context, describeFolders(), 'Which folder does this go in?'].filter(Boolean).join('\n\n') }],
-      },
-    ],
+    system,
+    output_config: { format: betaZodOutputFormat(schema), ...(settings.effort ? { effort: settings.effort } : {}) },
+    messages: [{ role: 'user', content }],
   };
   if (FALLBACK_MODELS.includes(settings.model)) {
     params.betas = ['server-side-fallback-2026-07-01'];
@@ -125,9 +122,16 @@ export async function classify(blocks, context) {
     }
     throw err;
   }
-
   if (response.stop_reason === 'refusal') throw new Error('Claude declined to classify this item');
-  const out = response.parsed_output;
+  return response.parsed_output;
+}
+
+export async function classify(blocks, context) {
+  const out = await ask({
+    system: SYSTEM_PROMPT,
+    content: [...blocks, { type: 'text', text: [context, describeFolders(), 'Which folder does this go in?'].filter(Boolean).join('\n\n') }],
+    schema: Classification,
+  });
   if (!out || !out.category?.trim()) throw new Error('Claude returned no category');
 
   return {
@@ -137,4 +141,33 @@ export async function classify(blocks, context) {
     description: out.description.trim(),
     tags: [...new Set(out.tags.map((t) => t.toLowerCase().trim()).filter(Boolean))].slice(0, 10),
   };
+}
+
+/**
+ * For a font whose file doesn't say what type it is: Claude often knows the
+ * typeface by name. Returns one of `folders`, or null if it isn't sure.
+ */
+export async function classifyFont(font, folders) {
+  if (!folders.length) return null;
+  const out = await ask({
+    system:
+      'You help a designer arrange their font files into folders by type. You only see the font\'s name. ' +
+      'If you know the typeface, or its name makes the type clear, pick the folder it belongs in. ' +
+      'If you are not confident, answer with an empty string rather than guessing.',
+    content: [
+      {
+        type: 'text',
+        text: [
+          `Font: ${font.fullName || font.family}`,
+          font.designer && `Designer: ${font.designer}`,
+          `Folders: ${folders.join(', ')}`,
+          'Which folder does this font belong in?',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      },
+    ],
+    schema: z.object({ folder: z.enum([...folders, '']) }),
+  });
+  return out?.folder || null;
 }

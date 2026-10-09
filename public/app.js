@@ -75,6 +75,27 @@ function counts() {
   return map;
 }
 
+// Fonts can hold subfolders: "Fonts/Serif" is shown as "Serif" inside Fonts, and "Fonts › Serif" elsewhere.
+const labelOf = (cat) => cat.label || cat.name;
+const displayPath = (name) => (name || '').split('/').join(' › ');
+const findCat = (name) => state.categories.find((c) => c.name === name);
+const subfoldersOf = (name) => state.categories.filter((c) => c.parent === name).sort((a, b) => labelOf(a).localeCompare(labelOf(b)));
+const inFolder = (item, name) => item.category === name || item.category?.startsWith(`${name}/`);
+
+/** Items in a folder, including its subfolders. */
+function totalIn(name, c = counts()) {
+  return [...c].reduce((n, [cat, k]) => n + (cat === name || cat.startsWith(`${name}/`) ? k : 0), 0);
+}
+
+/** <option>s for every folder, subfolders listed under their parent. */
+function folderOptions(selected) {
+  const top = state.categories.filter((c) => !c.parent).sort((a, b) => a.name.localeCompare(b.name));
+  return top.flatMap((c) => [
+    el('option', { value: c.name, selected: c.name === selected }, c.name),
+    ...subfoldersOf(c.name).map((sub) => el('option', { value: sub.name, selected: sub.name === selected }, `${c.name} › ${labelOf(sub)}`)),
+  ]);
+}
+
 function sortedItems() {
   return [...state.items.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
@@ -90,7 +111,7 @@ function matches(item, terms) {
 
 function visibleItems(r = route()) {
   const terms = state.query.toLowerCase().split(/\s+/).filter(Boolean);
-  return sortedItems().filter((i) => (r.view !== 'folder' || i.category === r.name) && matches(i, terms));
+  return sortedItems().filter((i) => (r.view !== 'folder' || inFolder(i, r.name)) && matches(i, terms));
 }
 
 // ---------- tiles ----------
@@ -137,7 +158,7 @@ function tileMedia(item) {
     return el(
       'div',
       { class: 'card font', style: { fontFamily: ensureFont(item) } },
-      el('div', { class: 'kind' }, 'Font'),
+      el('div', { class: 'kind font-name' }, item.title || 'Font'),
       el('div', { class: 'aa' }, 'Aa'),
       el('div', { class: 'glyphs' }, 'ABCDEFGHIJKLM abcdefghijklm 0123456789'),
     );
@@ -168,11 +189,20 @@ function buildTile(item) {
       role: 'button',
       'aria-label': item.title || 'Item',
       'data-id': item.id,
+      draggable: item.status !== 'processing',
       onclick: () => openViewer(item.id),
       onkeydown: (e) => e.key === 'Enter' && openViewer(item.id),
+      ondragstart: (e) => {
+        e.dataTransfer.setData(ITEM_DRAG, item.id);
+        e.dataTransfer.effectAllowed = 'move';
+        document.body.classList.add('dragging-item');
+      },
+      ondragend: () => document.body.classList.remove('dragging-item'),
     },
     media,
   );
+  // Let the tile itself be dragged, not the picture inside it.
+  tile.querySelectorAll('img').forEach((img) => (img.draggable = false));
 
   if (item.kind === 'link' && imageFor(item)) {
     tile.append(el('div', { class: 'link-caption' }, el('b', {}, item.title), el('small', {}, item.site || '')));
@@ -184,7 +214,7 @@ function buildTile(item) {
 
   if (item.status === 'processing') tile.append(el('span', { class: 'badge' }, 'Sorting…'));
   else if (item.status === 'error') tile.append(el('span', { class: 'badge' }, 'Couldn’t sort'));
-  else tile.append(el('div', { class: 'meta' }, el('b', {}, item.title || 'Untitled'), el('small', {}, item.category || '')));
+  else tile.append(el('div', { class: 'meta' }, el('b', {}, item.title || 'Untitled'), el('small', {}, displayPath(item.category))));
   return tile;
 }
 
@@ -238,15 +268,60 @@ function addToGrid(count) {
 
 // ---------- views ----------
 
+/** Dropping a tile onto a folder chip moves it there. */
+const ITEM_DRAG = 'application/x-library-item';
+
+function dropTarget(node, folderName) {
+  node.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes(ITEM_DRAG)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    node.classList.add('drop-here');
+  });
+  node.addEventListener('dragleave', () => node.classList.remove('drop-here'));
+  node.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer.types.includes(ITEM_DRAG)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    node.classList.remove('drop-here');
+    const id = e.dataTransfer.getData(ITEM_DRAG);
+    if (!id || state.items.get(id)?.category === folderName) return;
+    try {
+      await api(`/api/items/${id}`, { method: 'PATCH', body: { category: folderName } });
+      toast(`Moved to ${displayPath(folderName)}`);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  return node;
+}
+
 function chipsRow(active) {
   const c = counts();
   const total = state.items.size;
-  const cats = [...state.categories].sort((a, b) => (a.name === 'Unsorted') - (b.name === 'Unsorted') || a.name.localeCompare(b.name));
+  const top = active?.split('/')[0];
+  const cats = state.categories
+    .filter((cat) => !cat.parent)
+    .sort((a, b) => (a.name === 'Unsorted') - (b.name === 'Unsorted') || a.name.localeCompare(b.name));
   return el(
     'div',
     { class: 'chips' },
     el('a', { class: `chip ${active ? '' : 'on'}`, href: '#/' }, 'Everything', el('span', {}, total)),
-    cats.map((cat) => el('a', { class: `chip ${active === cat.name ? 'on' : ''}`, href: folderHref(cat.name) }, cat.name, el('span', {}, c.get(cat.name) || 0))),
+    cats.map((cat) => dropTarget(el('a', { class: `chip ${top === cat.name ? 'on' : ''}`, href: folderHref(cat.name) }, cat.name, el('span', {}, totalIn(cat.name, c))), cat.name)),
+  );
+}
+
+/** Inside Fonts: a row for its subfolders. Drag fonts onto them to arrange. */
+function subfolderRow(parent, active) {
+  const c = counts();
+  return el(
+    'div',
+    { class: 'chips subchips' },
+    dropTarget(el('a', { class: `chip ${active === parent.name ? 'on' : ''}`, href: folderHref(parent.name) }, `All ${parent.name.toLowerCase()}`, el('span', {}, totalIn(parent.name, c))), parent.name),
+    subfoldersOf(parent.name).map((sub) =>
+      dropTarget(el('a', { class: `chip ${active === sub.name ? 'on' : ''}`, href: folderHref(sub.name) }, labelOf(sub), el('span', {}, c.get(sub.name) || 0)), sub.name),
+    ),
+    el('button', { class: 'chip ghost', onclick: () => newSubfolder(parent) }, '+ Subfolder'),
   );
 }
 
@@ -272,14 +347,24 @@ function emptyLibrary() {
 }
 
 function folderHeading(cat, n) {
+  const parent = cat.parent && findCat(cat.parent);
   const tools = el(
     'div',
     { class: 'tools' },
-    el('button', { class: 'pill', onclick: () => renameFolder(cat) }, 'Rename'),
+    !cat.permanent && el('button', { class: 'pill', onclick: () => renameFolder(cat) }, 'Rename'),
     el('button', { class: 'pill', onclick: () => describeFolder(cat) }, cat.description ? 'Edit description' : 'Add description'),
-    n === 0 && el('button', { class: 'pill danger', onclick: () => deleteFolder(cat) }, 'Delete folder'),
+    cat.permanent && el('button', { class: 'pill', onclick: () => newSubfolder(cat) }, 'New subfolder'),
+    !cat.permanent && n === 0 && !subfoldersOf(cat.name).length && el('button', { class: 'pill danger', onclick: () => deleteFolder(cat) }, 'Delete folder'),
   );
-  return el('div', { class: 'heading' }, el('h1', {}, cat.name), el('p', {}, [cat.description, plural(n, 'item')].filter(Boolean).join(' · ')), tools);
+  const hint = cat.permanent && subfoldersOf(cat.name).length ? 'Drag a font onto a subfolder below to move it there.' : '';
+  return el(
+    'div',
+    { class: 'heading' },
+    parent && el('a', { class: 'crumb', href: folderHref(parent.name) }, `← ${parent.name}`),
+    el('h1', {}, labelOf(cat)),
+    el('p', {}, [cat.description, plural(n, 'item'), hint].filter(Boolean).join(' · ')),
+    tools,
+  );
 }
 
 function foldersView() {
@@ -288,13 +373,15 @@ function foldersView() {
   const previews = new Map();
   for (const item of sortedItems()) {
     if (!item.category) continue;
-    if (!latestBy.has(item.category)) latestBy.set(item.category, item.createdAt);
-    const list = previews.get(item.category) || [];
+    const top = item.category.split('/')[0];
+    if (!latestBy.has(top)) latestBy.set(top, item.createdAt);
+    const list = previews.get(top) || [];
     if (list.length < 4 && imageFor(item)) list.push(imageFor(item));
-    previews.set(item.category, list);
+    previews.set(top, list);
   }
   const terms = state.query.toLowerCase().split(/\s+/).filter(Boolean);
   const cats = state.categories
+    .filter((cat) => !cat.parent)
     .filter((cat) => terms.every((t) => `${cat.name} ${cat.description}`.toLowerCase().includes(t)))
     .sort((a, b) => (latestBy.get(b.name) || b.createdAt).localeCompare(latestBy.get(a.name) || a.createdAt));
 
@@ -314,7 +401,7 @@ function foldersView() {
       'div',
       { class: 'heading' },
       el('h1', {}, 'Folders'),
-      el('p', {}, plural(state.categories.length, 'folder')),
+      el('p', {}, plural(state.categories.filter((cat) => !cat.parent).length, 'folder')),
       el('div', { class: 'tools' }, el('button', { class: 'pill', onclick: newFolder }, 'New folder')),
     ),
     el(
@@ -330,7 +417,14 @@ function foldersView() {
             ? imgs.map((src) => el('div', { style: { backgroundImage: `url("${src}")` } }))
             : el('div', { class: 'glyph', style: { gridColumn: '1 / -1', gridRow: '1 / -1' } }, cat.name === 'Fonts' ? 'Aa' : cat.name[0]),
         );
-        return el('a', { class: 'folder', href: folderHref(cat.name) }, collage, el('h3', {}, cat.name), el('p', {}, plural(c.get(cat.name) || 0, 'item')));
+        const subs = subfoldersOf(cat.name).length;
+        return el(
+          'a',
+          { class: 'folder', href: folderHref(cat.name) },
+          collage,
+          el('h3', {}, cat.name),
+          el('p', {}, [plural(totalIn(cat.name, c), 'item'), subs && plural(subs, 'subfolder')].filter(Boolean).join(' · ')),
+        );
       }),
     ),
   );
@@ -350,19 +444,21 @@ function render() {
   if (r.view === 'folders') {
     grid = null;
     frag.push(foldersView());
-  } else if (!state.items.size) {
+  } else if (!state.items.size && r.view !== 'folder') {
     grid = null;
     frag.push(emptyLibrary());
   } else {
     frag.push(chipsRow(r.view === 'folder' ? r.name : null));
     const items = visibleItems(r);
     if (r.view === 'folder') {
-      const cat = state.categories.find((c) => c.name === r.name);
+      const cat = findCat(r.name);
       if (!cat) {
         location.hash = '#/';
         return;
       }
-      frag.push(folderHeading(cat, counts().get(cat.name) || 0));
+      frag.push(folderHeading(cat, totalIn(cat.name)));
+      const parent = cat.permanent ? cat : cat.parent && findCat(cat.parent);
+      if (parent?.permanent) frag.push(subfolderRow(parent, cat.name));
     }
     if (state.query) frag.push(el('div', { class: 'quiet', style: { padding: '0 0 18px', textAlign: 'left' } }, `${plural(items.length, 'result')} for “${state.query}”`));
     if (items.length) frag.push(renderGrid(items, keepShown));
@@ -400,9 +496,21 @@ async function newFolder() {
   }
 }
 
+async function newSubfolder(parent) {
+  const name = prompt(`New subfolder in ${parent.name}`);
+  if (!name?.trim()) return;
+  try {
+    const { category } = await api('/api/categories', { method: 'POST', body: { name, parent: parent.name } });
+    await refresh();
+    location.hash = folderHref(category.name);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 async function renameFolder(cat) {
-  const name = prompt('Rename folder (use the name of another folder to merge into it)', cat.name);
-  if (!name || name.trim() === cat.name) return;
+  const name = prompt('Rename folder (use the name of another folder to merge into it)', labelOf(cat));
+  if (!name || name.trim() === labelOf(cat)) return;
   try {
     const { category } = await api(`/api/categories/${encodeURIComponent(cat.name)}`, { method: 'PATCH', body: { name } });
     await refresh();
@@ -426,7 +534,7 @@ async function describeFolder(cat) {
 async function deleteFolder(cat) {
   try {
     await api(`/api/categories/${encodeURIComponent(cat.name)}`, { method: 'DELETE' });
-    location.hash = '#/folders';
+    location.hash = cat.parent ? folderHref(cat.parent) : '#/folders';
     await refresh();
   } catch (e) {
     toast(e.message);
@@ -447,7 +555,11 @@ function closeViewer() {
   state.viewer = null;
   viewerEl.hidden = true;
   document.body.style.overflow = '';
-  viewerEl.querySelector('.viewer-stage').replaceChildren();
+  // Forget what was shown too, or reopening the same item would leave the stage empty.
+  const stage = viewerEl.querySelector('.viewer-stage');
+  stage.replaceChildren();
+  delete stage.dataset.id;
+  delete stage.dataset.status;
 }
 
 function stepViewer(dir) {
@@ -491,6 +603,7 @@ function whyText(item) {
   if (item.status === 'processing') return 'Sorting…';
   if (item.status === 'error' || item.error) return item.error || 'Something went wrong.';
   if (item.sortedBy === 'fallback') return 'Waiting for a folder. Pick one above.';
+  if (item.kind === 'font' && item.sortedBy === 'rule') return item.category?.includes('/') ? 'Placed by the type stored in the font file' : 'Its type is unknown. Pick a subfolder above.';
   return { ai: 'Sorted by Claude', rule: `${KIND_LABEL[item.kind] || 'Files'}s always go here`, you: 'Put here by you' }[item.sortedBy] || '';
 }
 
@@ -505,7 +618,6 @@ function renderViewer() {
   }
   viewerEl.querySelectorAll('.viewer-nav').forEach((b) => (b.hidden = state.viewer.ids.length < 2));
 
-  const cats = [...state.categories].sort((a, b) => a.name.localeCompare(b.name));
   const select = el(
     'select',
     {
@@ -519,14 +631,14 @@ function renderViewer() {
         }
         try {
           await api(`/api/items/${item.id}`, { method: 'PATCH', body: { category } });
-          toast(`Moved to ${category}`);
+          toast(`Moved to ${displayPath(category)}`);
         } catch (err) {
           toast(err.message);
         }
       },
     },
     !item.category && el('option', { value: '', selected: true }, 'Sorting…'),
-    cats.map((c) => el('option', { value: c.name, selected: c.name === item.category }, c.name)),
+    folderOptions(item.category),
     el('option', { value: '__new' }, '+ New folder…'),
   );
 
@@ -596,7 +708,7 @@ function renderViewer() {
       window.desktop
         ? item.file && el('button', { class: 'pill', onclick: () => window.desktop.showItem(item.file) }, window.desktop.platform === 'darwin' ? 'Show in Finder' : 'Show in folder')
         : item.src && item.kind !== 'link' && el('a', { class: 'pill', href: item.src, download: item.originalName || '' }, 'Download'),
-      state.ai.enabled &&
+      (state.ai.enabled || item.kind === 'font') &&
       el(
         'button',
         {
@@ -767,7 +879,6 @@ function openAddDialog({ files = [], text = '' } = {}) {
   const staged = [];
   const urls = [];
   const r = route();
-  const cats = [...state.categories].sort((a, b) => a.name.localeCompare(b.name));
   let lastFolder = null;
   try {
     lastFolder = localStorage.getItem('lastFolder');
@@ -780,12 +891,12 @@ function openAddDialog({ files = [], text = '' } = {}) {
   const filePicker = el('input', { type: 'file', multiple: true, hidden: true, onchange: () => (stage({ files: filePicker.files }), (filePicker.value = '')) });
 
   const defaultTarget =
-    r.view === 'folder' ? r.name : state.ai.enabled ? AUTO : cats.some((c) => c.name === lastFolder) ? lastFolder : cats.length ? cats[0].name : NEW;
+    r.view === 'folder' ? r.name : state.ai.enabled ? AUTO : findCat(lastFolder) ? lastFolder : state.categories.length ? state.categories[0].name : NEW;
   const select = el(
     'select',
     { class: 'field-input', 'aria-label': 'Folder', onchange: update },
     el('option', { value: AUTO, disabled: !state.ai.enabled, selected: defaultTarget === AUTO }, state.ai.enabled ? '✦ Sort automatically' : '✦ Sort automatically (turn on in Settings)'),
-    cats.map((c) => el('option', { value: c.name, selected: defaultTarget === c.name }, c.name)),
+    folderOptions(defaultTarget),
     el('option', { value: NEW, selected: defaultTarget === NEW }, '+ New folder…'),
   );
 
@@ -952,6 +1063,7 @@ async function openSettings() {
           )
         : el('p', { class: 'hint' }, 'To store it somewhere else, set LIBRARY_DIR in .env and restart.'),
     ),
+    el('p', { class: 'hint' }, `Design Library ${s.version}`),
     error,
     el('div', { class: 'sheet-actions' }, el('button', { class: 'pill', onclick: () => closeSheet() }, 'Cancel'), saveButton),
   );
@@ -997,6 +1109,7 @@ document.addEventListener('drop', (e) => {
   dragDepth = 0;
   dropEl.hidden = true;
   const dt = e.dataTransfer;
+  if (dt.types.includes(ITEM_DRAG)) return;
   if (dt.files?.length) return quickAdd({ files: [...dt.files] });
   // Dragged from another browser tab: prefer the actual image over the page link.
   const html = dt.getData('text/html');
@@ -1074,7 +1187,7 @@ function connectEvents() {
     // Things you put somewhere yourself don't need announcing, unless you're elsewhere.
     if (by === 'you' && route().view === 'folder' && route().name === category) return;
     const verb = by === 'you' || by === 'fallback' ? 'Added to' : previous && previous === category ? 'Still belongs in' : 'Sorted into';
-    toast(`${verb} ${category}`, {
+    toast(`${verb} ${displayPath(category)}`, {
       thumb,
       badge: created ? 'New folder' : null,
       action: { label: 'View', run: () => (location.hash = folderHref(category)) },
