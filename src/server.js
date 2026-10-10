@@ -12,8 +12,26 @@ store.load();
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 const app = express();
+
+// Only this app's own page may use the library. A website open in your browser
+// can send requests to 127.0.0.1 too, so anything carrying another site's
+// Origin (or a Host that isn't this machine) is turned away.
+app.use((req, res, next) => {
+  const host = (req.headers.host || '').replace(/:\d+$/, '');
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(host)) return res.status(403).end();
+  const origin = req.headers.origin;
+  if (origin && origin !== `http://${req.headers.host}`) return res.status(403).end();
+  next();
+});
+
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static(path.join(ROOT, 'public')));
+
+// The page starts in your chosen theme, so there's no flash of the wrong one.
+const indexHtml = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+app.get(['/', '/index.html'], (_req, res) => {
+  res.type('html').send(indexHtml.replace('<html lang="en">', `<html lang="en" data-theme="${settings.theme}">`));
+});
+app.use(express.static(path.join(ROOT, 'public'), { index: false }));
 // The library itself, so the app can show your files. dotfiles are needed for .thumbs.
 app.use('/files', express.static(LIBRARY_DIR, { dotfiles: 'allow', index: false, maxAge: '1h' }));
 
@@ -144,6 +162,7 @@ app.get('/api/settings', (_req, res) => {
     model: settings.model,
     models: MODELS,
     libraryDir: LIBRARY_DIR,
+    theme: settings.theme,
     version: VERSION,
   });
 });
@@ -151,8 +170,9 @@ app.get('/api/settings', (_req, res) => {
 app.put(
   '/api/settings',
   wrap(async (req, res) => {
-    const { apiKey, autoSort, model } = req.body || {};
+    const { apiKey, autoSort, model, theme } = req.body || {};
     const patch = {};
+    if (['system', 'light', 'dark'].includes(theme)) patch.theme = theme;
     if (typeof model === 'string' && MODELS.some((m) => m.id === model)) patch.model = model;
     if (typeof autoSort === 'boolean') patch.autoSort = autoSort;
     if (typeof apiKey === 'string') {
@@ -200,14 +220,17 @@ app.use((err, _req, res, _next) => {
   res.status(err.status || 500).json({ error: err.message || 'Something went wrong' });
 });
 
-/** Starts the library. Port 0 picks any free port (the desktop app does this). */
-export function startServer({ port, host = '127.0.0.1' }) {
+/** Starts the library. Port 0 picks any free port. */
+export function startServer({ port, host = '127.0.0.1', fallbackToAnyPort = false }) {
   return new Promise((resolve, reject) => {
     const server = app.listen(port, host, () => {
       resumePending();
       const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${server.address().port}`;
       resolve({ server, url });
     });
-    server.on('error', reject);
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE' && fallbackToAnyPort && port !== 0) resolve(startServer({ port: 0, host }));
+      else reject(err);
+    });
   });
 }

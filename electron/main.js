@@ -1,5 +1,6 @@
 // The desktop app: starts the library server inside the app and shows it in a window.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, shell, ipcMain, dialog, nativeTheme } from 'electron';
@@ -10,9 +11,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // Settings live in the app's own data folder; the library defaults to Documents/Design Library.
+  // Settings live in the app's own data folder; the library defaults to Documents/Magpie.
   process.env.DATA_DIR = app.getPath('userData');
-  process.env.LIBRARY_DIR ||= path.join(app.getPath('documents'), 'Design Library');
+  carryOverFromDesignLibrary();
+  process.env.LIBRARY_DIR ||= path.join(app.getPath('documents'), 'Magpie');
 
   let mainWindow = null;
   let serverUrl = null;
@@ -40,7 +42,7 @@ if (!app.requestSingleInstanceLock()) {
       height: 900,
       minWidth: 720,
       minHeight: 520,
-      title: 'Design Library',
+      title: 'Magpie',
       show: false,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#0c0c0c' : '#ffffff',
       // Mac: no title bar, the header is the drag area. Windows/Linux: the menu bar shows only when Alt is pressed.
@@ -61,6 +63,10 @@ if (!app.requestSingleInstanceLock()) {
     });
     mainWindow.on('closed', () => (mainWindow = null));
   }
+
+  ipcMain.handle('app:set-theme', (_event, theme) => {
+    nativeTheme.themeSource = ['light', 'dark'].includes(theme) ? theme : 'system';
+  });
 
   ipcMain.handle('library:open-folder', () => shell.openPath(lib.config.LIBRARY_DIR));
 
@@ -97,9 +103,12 @@ if (!app.requestSingleInstanceLock()) {
         import('../src/server.js'),
       ]);
       lib = { config, store };
-      ({ url: serverUrl } = await startServer({ port: 0 }));
+      nativeTheme.themeSource = config.settings.theme;
+      // A steady port keeps the page's origin the same between launches (so small
+      // preferences it remembers survive a restart); any free port if it's taken.
+      ({ url: serverUrl } = await startServer({ port: 47823, fallbackToAnyPort: true }));
     } catch (err) {
-      dialog.showErrorBox('Design Library could not start', String(err?.stack || err));
+      dialog.showErrorBox('Magpie could not start', String(err?.stack || err));
       app.exit(1);
       return;
     }
@@ -112,4 +121,24 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('before-quit', () => lib?.store.flush());
+}
+
+/**
+ * Magpie used to be called Design Library. Bring over its settings (API key,
+ * model…) and keep using its library folder, so updating loses nothing.
+ */
+function carryOverFromDesignLibrary() {
+  try {
+    const oldSettings = path.join(app.getPath('appData'), 'design-library', 'settings.json');
+    const newSettings = path.join(app.getPath('userData'), 'settings.json');
+    if (!fs.existsSync(newSettings) && fs.existsSync(oldSettings)) {
+      fs.mkdirSync(path.dirname(newSettings), { recursive: true });
+      fs.copyFileSync(oldSettings, newSettings);
+    }
+    const oldLibrary = path.join(app.getPath('documents'), 'Design Library');
+    const newLibrary = path.join(app.getPath('documents'), 'Magpie');
+    if (!fs.existsSync(newLibrary) && fs.existsSync(path.join(oldLibrary, '.library.json'))) {
+      process.env.LIBRARY_DIR ||= oldLibrary;
+    }
+  } catch {}
 }

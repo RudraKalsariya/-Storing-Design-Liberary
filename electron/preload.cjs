@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('desktop', {
   openLibraryFolder: () => ipcRenderer.invoke('library:open-folder'),
   showItem: (relativePath) => ipcRenderer.invoke('library:show-item', relativePath),
   chooseLibraryFolder: () => ipcRenderer.invoke('library:choose-folder'),
+  setTheme: (theme) => ipcRenderer.invoke('app:set-theme', theme),
 });

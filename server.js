@@ -5,7 +5,7 @@ import { startServer } from './src/server.js';
 import { flush } from './src/store.js';
 
 const { url } = await startServer({ port: PORT, host: HOST });
-console.log(`\n  Design Library  →  ${url}`);
+console.log(`\n  Magpie  →  ${url}`);
 console.log(`  Files live in     ${LIBRARY_DIR}`);
 console.log(aiEnabled() ? `  Auto-sorting with ${settings.model}\n` : '  Auto-sorting is off: you choose folders (add an API key in Settings to turn it on)\n');
 

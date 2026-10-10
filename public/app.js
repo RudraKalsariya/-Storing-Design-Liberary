@@ -1017,9 +1017,27 @@ async function openSettings() {
   }
 
   const desktop = window.desktop;
+  const themes = [
+    ['system', 'System'],
+    ['light', 'Light'],
+    ['dark', 'Dark'],
+  ];
+  const themeButtons = themes.map(([value, label]) =>
+    el('button', { class: value === s.theme ? 'on' : '', 'data-theme-choice': value, onclick: () => chooseTheme(value) }, label),
+  );
+  async function chooseTheme(value) {
+    applyTheme(value);
+    themeButtons.forEach((b) => b.classList.toggle('on', b.dataset.themeChoice === value));
+    try {
+      await api('/api/settings', { method: 'PUT', body: { theme: value } });
+    } catch (e) {
+      toast(e.message);
+    }
+  }
   const body = el(
     'div',
     { class: 'sheet-body' },
+    el('section', { class: 'settings-section' }, el('h3', {}, 'Appearance'), el('div', { class: 'segmented', role: 'group', 'aria-label': 'Theme' }, themeButtons)),
     el(
       'section',
       { class: 'settings-section' },
@@ -1063,11 +1081,17 @@ async function openSettings() {
           )
         : el('p', { class: 'hint' }, 'To store it somewhere else, set LIBRARY_DIR in .env and restart.'),
     ),
-    el('p', { class: 'hint' }, `Design Library ${s.version}`),
+    el('p', { class: 'hint' }, `Magpie ${s.version}`),
     error,
     el('div', { class: 'sheet-actions' }, el('button', { class: 'pill', onclick: () => closeSheet() }, 'Cancel'), saveButton),
   );
   openSheet('Settings', body);
+}
+
+/** Light, Dark, or follow the system. The desktop window's frame follows along. */
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  window.desktop?.setTheme(theme);
 }
 
 // ---------- paste, drop, buttons ----------

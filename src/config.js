@@ -28,6 +28,7 @@ export const settings = {
   autoSort: saved.autoSort ?? true,
   model: saved.model || process.env.SORT_MODEL || 'claude-opus-5-5',
   effort: process.env.SORT_EFFORT ?? 'low',
+  theme: ['light', 'dark'].includes(saved.theme) ? saved.theme : 'system',
   libraryDir: path.resolve(ROOT, saved.libraryDir || process.env.LIBRARY_DIR || 'library'),
 };
 
@@ -41,7 +42,7 @@ export function saveSettings(patch) {
   const next = { ...readSaved(), ...patch };
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
-  for (const key of ['apiKey', 'autoSort', 'model']) if (key in patch) settings[key] = patch[key];
+  for (const key of ['apiKey', 'autoSort', 'model', 'theme']) if (key in patch) settings[key] = patch[key];
 }
 
 /** Claude sorts new things only when you've added a key and left auto-sort on. */

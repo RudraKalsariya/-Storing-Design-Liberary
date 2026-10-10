@@ -1,4 +1,4 @@
-# Design Library
+# Magpie
 
 A personal design library for your desktop. Drop in posters, patterns, 3D renders, fonts, PDFs, links and notes, and keep them organised in folders.
 
@@ -14,18 +14,22 @@ The interface is deliberately minimal, inspired by [cosmos.so](https://www.cosmo
    - **…-mac-x64.dmg**: older Intel Macs
    - **…-win-x64.exe**: Windows
 3. Install it:
-   - **Mac:** open the `.dmg` and drag **Design Library** into **Applications**.
+   - **Mac:** open the `.dmg` and drag **Magpie** into **Applications**.
    - **Windows:** run the `.exe` installer.
 
 The app isn't signed with a paid Apple or Microsoft developer certificate, so the first launch needs one extra step:
 
 - **Mac:** if it says the app "is damaged" or "can't be opened", open the **Terminal** app, paste this line and press Enter, then open the app again:
   ```
-  xattr -cr "/Applications/Design Library.app"
+  xattr -cr "/Applications/Magpie.app"
   ```
 - **Windows:** if a blue "Windows protected your PC" box appears, click **More info → Run anyway**.
 
 After that it opens like any other app.
+
+## Light and dark mode
+
+**Settings → Appearance** switches between **System** (follows your computer), **Light** and **Dark**.
 
 ## Using it
 
@@ -50,7 +54,7 @@ With auto-sorting off, things you paste or drop on the main view open the Add di
 - A new font goes straight into the matching subfolder when its type is clear, either from the classification stored in the font file or from its name ("Work Sans", "DM Mono"). With auto-sorting on, Claude also recognises well-known typefaces by name.
 - Fonts whose type isn't clear wait at the top of **Fonts**.
 - To arrange fonts, open **Fonts** and drag a font onto a subfolder chip, or open the font and pick a subfolder at the top. Dragging works for any item onto any folder chip.
-- On disk the subfolders are real folders: `Design Library/Fonts/Serif/…`.
+- On disk the subfolders are real folders: `Magpie/Fonts/Serif/…`.
 
 ## Auto-sorting (optional)
 
@@ -65,10 +69,10 @@ Open **Settings** (the gear icon), paste an Anthropic API key, and switch on **S
 
 ## Where your files live
 
-Your library is a normal folder, **Documents/Design Library**, with one subfolder per category:
+Your library is a normal folder, **Documents/Magpie**, with one subfolder per category. (If you used Magpie when it was still called Design Library, it keeps using your existing **Documents/Design Library** folder; **Settings** shows which.)
 
 ```
-Design Library/
+Magpie/
   Poster Layouts/
     swiss-jazz-poster-a1b2c3.png
   Patterns/
@@ -84,7 +88,7 @@ Move and rename things inside the app rather than in Finder or Explorer, so the 
 
 ## Updating
 
-Installing a newer version over the old one keeps everything, because your library lives in `Documents/Design Library`, outside the app. Your settings are kept too. You can check which version you have at the bottom of **Settings**.
+Installing a newer version over the old one keeps everything, because your library lives in its own folder in Documents, outside the app. Your settings are kept too. You can check which version you have at the bottom of **Settings**.
 
 To publish a new version:
 

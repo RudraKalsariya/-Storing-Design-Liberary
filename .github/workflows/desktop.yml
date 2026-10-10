@@ -1,6 +1,6 @@
 # Builds the desktop app installers on GitHub's Mac, Windows and Linux machines.
 # Download them from the "Artifacts" section of a run on the Actions tab.
-# Each one is named Design-Library-<version>-<mac|win|linux>-<arm64|x64>.
+# Each one is named Magpie-<version>-<mac|win|linux>-<arm64|x64>.
 # Raising the version in package.json also publishes them as a GitHub Release.
 name: Build desktop app
 
@@ -79,7 +79,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: Design Library ${{ steps.version.outputs.tag }}
+          name: Magpie ${{ steps.version.outputs.tag }}
           files: installers/*
           generate_release_notes: true
           body: |
@@ -89,7 +89,8 @@ jobs:
             - `…-mac-x64.dmg`: Intel Macs
             - `…-win-x64.exe`: Windows
 
-            Installing over an older version keeps your library: it lives in `Documents/Design Library`, outside the app.
+            Installing over an older version keeps your library and settings: they live outside the app.
+            Upgrading from **Design Library** (Magpie's old name)? Your library and settings carry over. On a Mac, delete the old *Design Library* app from Applications afterwards.
 
-            First launch on a Mac: if it says the app is damaged or can't be opened, run `xattr -cr "/Applications/Design Library.app"` in Terminal, then open it again.
+            First launch on a Mac: if it says the app is damaged or can't be opened, run `xattr -cr "/Applications/Magpie.app"` in Terminal, then open it again.
             On Windows, if you see "Windows protected your PC", click **More info → Run anyway**.
