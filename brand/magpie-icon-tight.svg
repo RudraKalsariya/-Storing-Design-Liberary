@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="824" height="824" viewBox="100 100 824 824">
+  <title>Magpie</title>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#111111"/>
+  <rect x="262" y="262" width="150" height="290" rx="34" fill="#ffffff"/>
+  <rect x="262" y="584" width="150" height="178" rx="34" fill="#ffffff" fill-opacity="0.55"/>
+  <rect x="437" y="262" width="150" height="178" rx="34" fill="#ffffff" fill-opacity="0.55"/>
+  <rect x="437" y="472" width="150" height="290" rx="34" fill="#ffffff"/>
+  <rect x="612" y="262" width="150" height="230" rx="34" fill="#ffffff"/>
+  <rect x="612" y="524" width="150" height="238" rx="34" fill="#ffffff" fill-opacity="0.55"/>
+</svg>

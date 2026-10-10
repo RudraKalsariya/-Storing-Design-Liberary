@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="262 262 500 500">
+  <title>Magpie mark</title>
+  <g fill="#111111">
+    <rect x="262" y="262" width="150" height="290" rx="34"/>
+    <rect x="262" y="584" width="150" height="178" rx="34" fill-opacity="0.55"/>
+    <rect x="437" y="262" width="150" height="178" rx="34" fill-opacity="0.55"/>
+    <rect x="437" y="472" width="150" height="290" rx="34"/>
+    <rect x="612" y="262" width="150" height="230" rx="34"/>
+    <rect x="612" y="524" width="150" height="238" rx="34" fill-opacity="0.55"/>
+  </g>
+</svg>
