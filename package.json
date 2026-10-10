@@ -83,6 +83,18 @@
         "AppImage"
       ],
       "category": "Graphics"
+    },
+    "appx": {
+      "identityName": "RudraKalsariya.MagpieLibrary",
+      "publisher": "CN=C57CC4AF-8568-4113-B205-78822D49A628",
+      "publisherDisplayName": "Rudra Kalsariya",
+      "displayName": "Magpie Library",
+      "applicationId": "Magpie",
+      "backgroundColor": "transparent",
+      "languages": [
+        "en-US"
+      ],
+      "artifactName": "Magpie-${version}-microsoft-store.${ext}"
     }
   }
 }

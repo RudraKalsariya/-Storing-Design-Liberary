@@ -2,6 +2,8 @@
 # Download them from the "Artifacts" section of a run on the Actions tab.
 # Each one is named Magpie-<version>-<mac|win|linux>-<arm64|x64>.
 # Raising the version in package.json also publishes them as a GitHub Release.
+# The Microsoft Store package (…-microsoft-store.appx) is only on the Actions run,
+# for uploading in Partner Center.
 name: Build desktop app
 
 on:
@@ -29,6 +31,12 @@ jobs:
             os: windows-latest
             args: --win --x64
             files: dist/*.exe
+          # The package you upload in Partner Center. The Store signs it, so it
+          # isn't meant for installing directly and isn't attached to releases.
+          - name: microsoft-store
+            os: windows-latest
+            args: --win appx --x64
+            files: dist/*.appx
           - name: linux
             os: ubuntu-latest
             args: --linux --x64
@@ -80,7 +88,10 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Magpie ${{ steps.version.outputs.tag }}
-          files: installers/*
+          files: |
+            installers/*.dmg
+            installers/*.exe
+            installers/*.AppImage
           generate_release_notes: true
           body: |
             **Download the installer for your computer** from the list below:

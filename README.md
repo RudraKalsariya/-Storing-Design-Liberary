@@ -96,6 +96,14 @@ To publish a new version:
 2. Commit and push.
 3. GitHub builds the Mac, Windows and Linux installers and, seeing a version that hasn't been released yet, publishes them on the Releases page as `v1.2.0`. This usually takes about 15 minutes. Pushes that don't change the version only make test builds.
 
+## Microsoft Store
+
+Every build on GitHub also makes **Magpie-<version>-microsoft-store.appx**. Find it under **Artifacts** on that build's page on the **Actions** tab. That's the package to upload in Partner Center (**Submission → Packages**). Microsoft signs it, so Store users never see the "Windows protected your PC" warning. It isn't meant for installing directly, which is why it isn't attached to releases.
+
+The Store identity (name, publisher) is set under `build.appx` in `package.json`. The listing text, privacy policy link and screenshot guidance are in [`store/microsoft-store-listing.md`](store/microsoft-store-listing.md). The privacy policy itself is [`PRIVACY.md`](PRIVACY.md).
+
+To update the Store version, release a new version as usual, then upload the new `.appx` in a new Partner Center submission.
+
 ## Run from source (for development)
 
 Needs [Node.js](https://nodejs.org/) 20.12 or newer.
